@@ -38,7 +38,7 @@ import           FamInstEnv (FamInstEnvs)
 import           GHC.Exts (fromString)
 import           GHC.Generics
 import           GHC.SourceGen (var)
-import           GhcPlugins (GlobalRdrElt, mkRdrUnqual)
+import           GhcPlugins (GlobalRdrElt, mkRdrUnqual, UniqFM, PackageTypeEnv)
 import           InstEnv (InstEnvs(..))
 import           OccName
 import           Refinery.ProofState
@@ -215,6 +215,7 @@ data Provenance
       OccName   -- ^ Binding function
       Int       -- ^ Argument Position
       Int       -- ^ of how many arguments total?
+  | LocalArgPrv OccName
     -- | A binding created in a pattern match.
   | PatternMatchPrv PatVal
     -- | A class method from the given context.
@@ -485,6 +486,7 @@ data Context = Context
   , ctxTheta         :: Set CType
   , ctx_hscEnv       :: HscEnv
   , ctx_occEnv       :: OccEnv [GlobalRdrElt]
+  , ctx_typEnv       :: PackageTypeEnv
   , ctx_module       :: Module
   }
 
@@ -512,6 +514,7 @@ emptyContext
       , ctx_hscEnv = error "empty hsc env from emptyContext"
       , ctx_occEnv = emptyOccEnv
       , ctx_module = error "empty module from emptyContext"
+      , ctx_typEnv = mempty
       }
 
 

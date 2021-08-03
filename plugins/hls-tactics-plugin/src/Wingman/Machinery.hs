@@ -364,6 +364,7 @@ knownClass occ =
     Just (ATyCon tc) -> tyConClass_maybe tc
     _                -> Nothing
 
+-- data TypEnv = TEnv { positiveCtor :: S.Set Ctor }
 
 ------------------------------------------------------------------------------
 -- | Like 'getInstance', but uses a class that it just looked up.
@@ -391,6 +392,24 @@ getCurrentDefinitions = do
   ctx_funcs <- asks ctxDefiningFuncs
   for ctx_funcs $ \res@(occ, _) ->
     pure . maybe res (occ,) =<< lookupNameInContext occ
+
+
+-- Fixme: Have seperate typtags for goal, capturing:
+--
+-- Explicit (forced) argument ctors - if we have a HashMap argument to the right, don't return a caf Int over HashMap.size
+-- Local context ctors
+-- File context ctors
+--
+-- Use required-Arity information? Allow reordering of parameters by eta-expanding if few candidates?
+--
+-- Constraints in local context
+-- Implementations on top-level result types
+--
+-- Add context:
+-- - !!!frequency information about ctors (MyBespokeHashmap is more informative than Int)
+-- - Maybe frequency information about constraint use? (rarely used constraint)
+-- - Maybe frequency information about constraint implementation? (rarely implemented constraint)
+
 
 
 ------------------------------------------------------------------------------

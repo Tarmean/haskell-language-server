@@ -8,7 +8,7 @@ import           Data.Foldable.Extra (allM)
 import           Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as S
 import           Development.IDE.GHC.Compat
-import           GhcPlugins (ExternalPackageState (eps_inst_env), piResultTys, eps_fam_inst_env, extractModule)
+import           GhcPlugins (ExternalPackageState (eps_inst_env, eps_PTE), piResultTys, eps_fam_inst_env, extractModule)
 import           InstEnv (lookupInstEnv, InstEnvs(..), is_dfun)
 import           OccName
 import           TcRnTypes
@@ -19,6 +19,9 @@ import           Wingman.Judgements.Theta
 import           Wingman.Types
 
 
+-- Path to autocompletion:
+-- eps_PTE(in ExternalPackageState): !PackageTypeEnv from eps, maps unique to types (TyThing but whatever)
+-- tcg_rdr_env(in TcGblEnv) :: GlobalRdrEnv map unique to occname
 mkContext
     :: Config
     -> [(OccName, CType)]
@@ -50,6 +53,7 @@ mkContext cfg locals tcg hscenv eps ev = fix $ \ctx ->
     , ctx_hscEnv = hscenv
     , ctx_occEnv = tcg_rdr_env tcg
     , ctx_module = extractModule tcg
+    , ctx_typEnv = eps_PTE eps
     }
 
 

@@ -22,6 +22,8 @@ import           Wingman.Metaprogramming.Parser.Documentation
 import           Wingman.Metaprogramming.ProofState (proofState, layout)
 import           Wingman.Tactics
 import           Wingman.Types
+import Text.Megaparsec (satisfy)
+import Control.Applicative (some)
 
 
 nullary :: T.Text -> TacticsM () -> Parser (TacticsM ())
@@ -96,6 +98,18 @@ commands =
           []
           (Just "a -> b -> c -> d")
           "\\x y z -> (_ :: d)"
+      ]
+  , command "guess" Nondeterministic Nullary
+      "Use some name from the global context that seems about right"
+      (do
+         s <- lexeme $ some ichar
+         pure (guess 50 s))
+      [ Example
+          Nothing
+          []
+          []
+          (Just "M.Map k v -> Maybe v")
+          "M.lookup _ _"
       ]
 
   , command "intro" Deterministic (Bind One)

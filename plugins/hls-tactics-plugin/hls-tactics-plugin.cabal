@@ -53,6 +53,7 @@ library
     Wingman.Range
     Wingman.Simplify
     Wingman.StaticPlugin
+    Wingman.Relevancy
     Wingman.Tactics
     Wingman.Types
 

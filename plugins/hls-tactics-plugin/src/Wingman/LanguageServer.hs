@@ -27,8 +27,11 @@ import           Data.Set (Set)
 import qualified Data.Set as S
 import qualified Data.Text as T
 import           Data.Traversable
-import           Development.IDE (getFilesOfInterestUntracked, ShowDiagnostic (ShowDiag), srcSpanToRange)
-import           Development.IDE (hscEnv)
+import Development.IDE
+    ( getFilesOfInterestUntracked,
+      ShowDiagnostic(ShowDiag),
+      srcSpanToRange,
+      hscEnv, unsafePrintSDoc )
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Rules (usePropertyAction)
 import           Development.IDE.Core.Service (runAction)
@@ -40,7 +43,7 @@ import           Development.IDE.GHC.Error (realSrcSpanToRange)
 import           Development.IDE.GHC.ExactPrint
 import           Development.IDE.Graph (Action, RuleResult, Rules, action)
 import           Development.IDE.Graph.Classes (Binary, Hashable, NFData)
-import           Development.IDE.Spans.LocalBindings (Bindings, getDefiningBindings)
+import           Development.IDE.Spans.LocalBindings (Bindings, getLocalScope)
 import qualified FastString
 import           GHC.Generics (Generic)
 import           Generics.SYB hiding (Generic)
@@ -49,8 +52,8 @@ import qualified Ide.Plugin.Config as Plugin
 import           Ide.Plugin.Properties
 import           Ide.PluginUtils (usePropertyLsp)
 import           Ide.Types (PluginId)
-import           Language.Haskell.GHC.ExactPrint (Transform)
-import           Language.Haskell.GHC.ExactPrint (modifyAnnsT, addAnnotationsForPretty)
+import Language.Haskell.GHC.ExactPrint
+    ( Transform, modifyAnnsT, addAnnotationsForPretty )
 import           Language.LSP.Server (MonadLsp, sendNotification)
 import           Language.LSP.Types
 import           Language.LSP.Types.Capabilities
@@ -67,6 +70,8 @@ import           Wingman.Judgements.Theta
 import           Wingman.Range
 import           Wingman.StaticPlugin (pattern WingmanMetaprogram, pattern MetaprogramSyntax)
 import           Wingman.Types
+import Outputable (ppr)
+import Wingman.Relevancy (runAna, AnaState (depOnHoleParents))
 
 
 tacticDesc :: T.Text -> T.Text
@@ -252,18 +257,29 @@ mkJudgementAndContext cfg g (TrackedStale binds bmap) rss (TrackedStale tcg tcgm
       ctx = mkContext cfg
               (mapMaybe (sequenceA . (occName *** coerce))
                 $ unTrack
-                $ getDefiningBindings <$> binds <*> binds_rss)
+                $ getLocalScope <$> binds <*> binds_rss)
               (unTrack tcg)
               hscenv
               eps
               evidence
       top_provs = getRhsPosVals tcg_rss tcs
       already_destructed = getAlreadyDestructed (fmap RealSrcSpan tcg_rss) tcs
-      local_hy = spliceProvenance top_provs
+      local_hy0 = spliceProvenance top_provs
                $ hypothesisFromBindings binds_rss binds
+      anState = runAna (unTrack tcg_rss) (S.fromList $ hi_name <$> unHypothesis local_hy0) (unTrack tcs)
+      isHypRec a = S.member a (depOnHoleParents anState)
+      local_hy
+        = Hypothesis
+        [ HyInfo (hi_name c) prov (hi_type c)
+        | c <- unHypothesis local_hy0
+        , let prov = if isHypRec (hi_name c)
+                     then RecursivePrv
+                     else hi_provenance c ]
+
       evidence = getEvidenceAtHole (fmap RealSrcSpan tcg_rss) tcs
       cls_hy = foldMap evidenceToHypothesis evidence
       subst = ts_unifier $ evidenceToSubst evidence defaultTacticState
+  -- traceMX "mkJundgementAndContext:.binds" (unTrack tcs)
   pure $
     ( disallowing AlreadyDestructed already_destructed
     $ fmap (CType . substTyAddInScope subst . unCType) $
@@ -395,12 +411,12 @@ buildPatHy prov (fromPatCompat -> p0) =
           mkDerivedConHypothesis prov con args $ zip [0..] [pgt, pgt5]
         RecCon r ->
           mkDerivedRecordHypothesis prov con args r
-#if __GLASGOW_HASKELL__ >= 808
+
     SigPat  _ p _ -> buildPatHy prov p
-#endif
-#if __GLASGOW_HASKELL__ == 808
-    XPat   p      -> buildPatHy prov $ unLoc p
-#endif
+
+
+
+
     _             -> pure mempty
 
 
@@ -530,10 +546,10 @@ wingmanRules plId = do
                       L span (HsUnboundVar _ (TrueExprHole occ))
                         | isHole occ ->
                             maybeToList $ srcSpanToRange span
-#if __GLASGOW_HASKELL__ <= 808
-                      L span (EWildPat _) ->
-                        maybeToList $ srcSpanToRange span
-#endif
+
+
+
+
                       (_ :: LHsExpr GhcPs) -> mempty
                     ) $ pm_parsed_source pm
             pure

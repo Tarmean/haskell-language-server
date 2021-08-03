@@ -6,7 +6,7 @@ module Wingman.Tactics
   ) where
 
 import           ConLike (ConLike(RealDataCon))
-import           Control.Applicative (Alternative(empty))
+import           Control.Applicative (Alternative(empty, (<|>)))
 import           Control.Lens ((&), (%~), (<>~))
 import           Control.Monad (filterM)
 import           Control.Monad (unless)
@@ -42,6 +42,12 @@ import           Wingman.Machinery
 import           Wingman.Naming
 import           Wingman.StaticPlugin (pattern MetaprogramSyntax)
 import           Wingman.Types
+import Control.Monad (guard)
+import Wingman.Relevancy
+import Data.Generics (mkT)
+import Data.Generics.Schemes (everywhere)
+import TyCoRep (Type(TyConApp))
+import TysWiredIn (anyTyCon)
 
 
 ------------------------------------------------------------------------------
@@ -78,6 +84,46 @@ use sat occ = do
     Just ty -> pure ty
     Nothing -> CType <$> getOccNameType occ
   apply sat $ createImportedHyInfo occ ty
+
+guess :: Int -> String -> TacticsM ()
+guess k lab = do
+  unsafeModifyGoal $ \g -> g { _jGoal = substAny (_jGoal g) }
+  traceM "guess"
+  guesses <- bestContext
+  let
+    candidates
+      | k > 0 = take k guesses
+      |otherwise = take 50 guesses
+  traceMX "guess::guesses" candidates
+  traceMX "guesses: main" $ [ g |g@(_,n,_) <- guesses, show n == lab]
+
+  r <- _jGoal <$> goal
+  -- let first = foldr commit empty
+  asum $ flip map candidates $ \(_, occ, ty)  -> do
+      let (_,_,argsGot,_) = tacticsSplitFunTy $ unCType r
+          got = length argsGot
+          (_,_,argsWanted,_) = tacticsSplitFunTy $ unCType ty
+          wanted = length argsWanted
+      -- traceMX "try type" ty
+      -- traceMX "got args" got
+      -- traceMX "wanted args" wanted
+      guard $ wanted >= got
+
+      use (Unsaturated got) occ
+
+unsafeModifyGoal :: (Judgement -> Judgement) -> TacticsM ()
+unsafeModifyGoal f = TacticT $ StateT $ \s -> pure ((), f s)
+substAny :: CType -> CType
+substAny = everywhere (mkT go)
+  where
+    go (TyConApp aty _)
+      | aty == anyTyCon  = alphaTy
+    go a
+      | show a == "Any"
+      , traceX "found any: " a False = alphaTy
+    go a = a
+  -- (_, occ, ty) <- asum $ pure <$> candidates
+
 
 
 recursion :: TacticsM ()
