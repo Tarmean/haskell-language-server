@@ -37,9 +37,11 @@ import Bag (bagToList)
 import Control.Lens
 import GHC.Generics (Generic)
 import TysWiredIn (anyTyCon)
+import qualified Wingman.ArgMatch as ArgMatch
 type Tags = UniqSet TyCon
 data TypTags = TypTags { argCount :: Int, posCtor :: UniqSet TyCon, negCtor :: UniqSet TyCon, constraintTags :: UniqSet TyCon }
 
+-- This is currently dead code because I am experimenting with unification based matching
 data PatContext = PatContext {
     resultTags :: Tags,
     appliedCount :: Int,
@@ -234,17 +236,20 @@ scaleByArity us
 -- foo us = [wingman|guess|]
 
 
-scoreContext :: [(OccName, CType)] -> [CType] -> CType -> [(Score, OccName, CType)]
-scoreContext ls ctx goal
-  | traceX "scoreContext ctx" (goal,ctx, patCtx) False = undefined
-  | otherwise
-  = sortOn (\(a,_,_) -> a) [ ( scoreTags patCtx candidate, n, typ) | (n, typ) <- ls, let candidate = gatherCTy typ ]  where
-    TypTags { posCtor=localTags } =  foldMap gatherCTy ctx
-    TypTags {argCount =argCount, posCtor = resTags, negCtor = appliedTags} = gatherCTy goal
-    patCtx = PatContext resTags argCount appliedTags localTags mempty mempty mempty mempty
-    gatherCTy (CType c) = gatherTy c
-bestContext :: TacticsM [(Score, OccName, CType)]
-bestContext = do
+scoreContext :: [(OccName, CType)] -> [HyInfo CType] -> CType -> [(Double, HyInfo CType, [ArgMatch.Match])]
+scoreContext ls hyps goal
+  | traceX "scoreContext ctx" ctx False = undefined
+  | otherwise = sortOn (\(a,_,_) -> a) [ (cost, HyInfo candidate UserPrv ct, matches)| (candidate, ct) <- ls, (cost, matches) <- maybeToList (ArgMatch.runMatcher ctx ct) ]
+  -- = sortOn (\(a,_,_) -> a) [ ( scoreTags patCtx candidate, n, typ) | (n, typ) <- ls, let candidate = gatherCTy typ ]  where
+  --   TypTags { posCtor=localTags } =  foldMap gatherCTy ctx
+  --   TypTags {argCount =argCount, posCtor = resTags, negCtor = appliedTags} = gatherCTy goal
+  --   patCtx = PatContext resTags argCount appliedTags localTags mempty mempty mempty mempty
+  --   gatherCTy (CType c) = gatherTy c
+  where
+    ctx = ArgMatch.mkContext mempty hyps goal
+    
+bestContext :: String -> TacticsM [(Double, HyInfo CType, [ArgMatch.Match])]
+bestContext lab = do
   tyEnv <- asks ctx_typEnv
   names <- asks ctx_occEnv
   locals <- asks ctxModuleFuncs
@@ -262,6 +267,7 @@ bestContext = do
          ] ++ filter ((`notElem` def) . fst) locals
   traceMX "curDef " def
   jdg <- goal
+  traceM "hyps0"
   traceMX "hyps " (_jHypothesis jdg)
   let ctx =  pairings
   traceMX "candidate names"  $ map fst ctx
@@ -269,8 +275,10 @@ bestContext = do
       nonRec RecursivePrv = False
       nonRec (DisallowedPrv _ RecursivePrv) = False
       nonRec _ = True
-      hypType = fmap hi_type $ filter (nonRec . hi_provenance) $ unHypothesis $ _jHypothesis jdg
+      hypType = filter (nonRec . hi_provenance) $ unHypothesis $ _jHypothesis jdg
   pure $ scoreContext ctx hypType gType
+
+
 
 
 gatherIds :: Data a => a -> [Id]
@@ -339,7 +347,6 @@ isLocRelevant :: RealSrcSpan -> GenLocated SrcSpan e -> Bool
 isLocRelevant loc lm
   | Just _ <- guardLoc loc lm = True
   | otherwise = False
-
 
 
 

@@ -43,11 +43,13 @@ import           Wingman.Naming
 import           Wingman.StaticPlugin (pattern MetaprogramSyntax)
 import           Wingman.Types
 import Control.Monad (guard)
-import Wingman.Relevancy
+import Wingman.Relevancy ( bestContext )
 import Data.Generics (mkT)
 import Data.Generics.Schemes (everywhere)
 import TyCoRep (Type(TyConApp))
 import TysWiredIn (anyTyCon)
+import qualified Wingman.ArgMatch as ArgMatch
+
 
 
 ------------------------------------------------------------------------------
@@ -89,27 +91,25 @@ guess :: Int -> String -> TacticsM ()
 guess k lab = do
   unsafeModifyGoal $ \g -> g { _jGoal = substAny (_jGoal g) }
   traceM "guess"
-  guesses <- bestContext
+  guesses <- bestContext lab
   let
     candidates
       | k > 0 = take k guesses
       |otherwise = take 50 guesses
   traceMX "guess::guesses" candidates
-  traceMX "guesses: main" $ [ g |g@(_,n,_) <- guesses, show n == lab]
+  traceMX "guesses: main" $ [ g |g@(_,n,_) <- guesses, show (hi_name n) == lab]
 
-  r <- _jGoal <$> goal
-  -- let first = foldr commit empty
-  asum $ flip map candidates $ \(_, occ, ty)  -> do
-      let (_,_,argsGot,_) = tacticsSplitFunTy $ unCType r
-          got = length argsGot
-          (_,_,argsWanted,_) = tacticsSplitFunTy $ unCType ty
-          wanted = length argsWanted
-      -- traceMX "try type" ty
-      -- traceMX "got args" got
-      -- traceMX "wanted args" wanted
-      guard $ wanted >= got
+  asum $ flip map candidates $ \(_, occ, match) -> do
+      apply Saturated occ  <@> map mkMatchArg match
 
-      use (Unsaturated got) occ
+mkMatchArg :: ArgMatch.Match -> TacticsM ()
+mkMatchArg [a] =  mkOne a
+mkMatchArg ls
+  | (ty:_) <- [ty | ArgMatch.NestedHole ty <- ls] = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
+  | otherwise = asum (map mkOne ls)
+mkOne ::  ArgMatch.MOcc -> TacticsM ()
+mkOne (ArgMatch.NestedHole ty) = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
+mkOne (ArgMatch.Exact s) = assume s
 
 unsafeModifyGoal :: (Judgement -> Judgement) -> TacticsM ()
 unsafeModifyGoal f = TacticT $ StateT $ \s -> pure ((), f s)

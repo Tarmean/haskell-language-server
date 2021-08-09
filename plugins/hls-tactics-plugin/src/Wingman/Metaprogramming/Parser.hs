@@ -103,7 +103,7 @@ commands =
       "Use some name from the global context that seems about right"
       (do
          s <- lexeme $ some ichar
-         pure (guess 50 s))
+         pure (guess 5 s))
       [ Example
           Nothing
           []

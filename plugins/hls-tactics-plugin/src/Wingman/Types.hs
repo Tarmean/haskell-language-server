@@ -500,6 +500,7 @@ instance Show Context where
     ]
 
 
+
 ------------------------------------------------------------------------------
 -- | An empty context
 emptyContext :: Context

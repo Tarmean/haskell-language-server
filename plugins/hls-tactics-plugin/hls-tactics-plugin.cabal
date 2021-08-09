@@ -54,6 +54,7 @@ library
     Wingman.Simplify
     Wingman.StaticPlugin
     Wingman.Relevancy
+    Wingman.ArgMatch
     Wingman.Tactics
     Wingman.Types
 
