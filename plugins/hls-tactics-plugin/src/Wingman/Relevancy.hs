@@ -31,6 +31,7 @@ import Data.Data (Data, cast, gcast, Typeable)
 import           Data.Generics.Labels ()
 import SrcLoc (containsSpan)
 import qualified Data.Set as S
+import qualified Data.List as List
 import qualified Data.Map as M
 import Control.Monad.State
 import Bag (bagToList)
@@ -38,6 +39,13 @@ import Control.Lens
 import GHC.Generics (Generic)
 import TysWiredIn (anyTyCon)
 import qualified Wingman.ArgMatch as ArgMatch
+import TyCoRep (Type(..), AnonArgFlag (VisArg))
+import qualified UniqSet as US
+import qualified Data.IntSet as IS
+import BasicTypes (isKindLevel)
+import TyCon (isDataTyCon)
+import Development.IDE.Plugin.Completions.Types
+import qualified Data.Text as T
 type Tags = UniqSet TyCon
 data TypTags = TypTags { argCount :: Int, posCtor :: UniqSet TyCon, negCtor :: UniqSet TyCon, constraintTags :: UniqSet TyCon }
 
@@ -104,6 +112,12 @@ instance Monoid TypTags where
   mempty
     = TypTags
         {argCount = 0, posCtor = mempty, negCtor = mempty, constraintTags = mempty}
+
+foo :: ()
+foo = () 
+  where
+    bar :: M.Map Int String -> [String]
+    bar m = map show $ bar m
 
 mkPos :: TyCon -> TypTags
 mkPos a = mempty { posCtor = unitUniqSet a }
@@ -236,8 +250,8 @@ scaleByArity us
 -- foo us = [wingman|guess|]
 
 
-scoreContext :: [(OccName, CType)] -> [HyInfo CType] -> CType -> [(Double, HyInfo CType, [ArgMatch.Match])]
-scoreContext ls hyps goal
+scoreContext :: S.Set TyVar  -> [(OccName, CType)] -> [HyInfo CType] -> CType -> [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
+scoreContext skolems ls hyps goal
   | traceX "scoreContext ctx" ctx False = undefined
   | otherwise = sortOn (\(a,_,_) -> a) [ (cost, HyInfo candidate UserPrv ct, matches)| (candidate, ct) <- ls, (cost, matches) <- maybeToList (ArgMatch.runMatcher ctx ct) ]
   -- = sortOn (\(a,_,_) -> a) [ ( scoreTags patCtx candidate, n, typ) | (n, typ) <- ls, let candidate = gatherCTy typ ]  where
@@ -246,39 +260,61 @@ scoreContext ls hyps goal
   --   patCtx = PatContext resTags argCount appliedTags localTags mempty mempty mempty mempty
   --   gatherCTy (CType c) = gatherTy c
   where
-    ctx = ArgMatch.mkContext mempty hyps goal
+    ctx = ArgMatch.mkContext skolems hyps goal
     
-bestContext :: String -> TacticsM [(Double, HyInfo CType, [ArgMatch.Match])]
+bestContext :: String -> TacticsM [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
 bestContext lab = do
-  tyEnv <- asks ctx_typEnv
-  names <- asks ctx_occEnv
   locals <- asks ctxModuleFuncs
-  let
-    getTy (AnId v) = [varType v]
-    getTy _ = []
+  compItems <- asks ctx_complEnv
   -- traceMX "some tys" $ take 100 $ concatMap (getTy . snd) $ nonDetUFMToList tyEnv
   def <- asks (fmap fst . ctxDefiningFuncs)
-  let
-    pairings =
-         [ (occName (gre_name name), CType typ)
-         | name <- globalRdrEnvElts names
-         , tyThing <- maybeToList $  lookupUFM  tyEnv (gre_name name)
-         , typ <- getTy tyThing
-         ] ++ filter ((`notElem` def) . fst) locals
   traceMX "curDef " def
   jdg <- goal
   traceM "hyps0"
   traceMX "hyps " (_jHypothesis jdg)
-  let ctx =  pairings
-  traceMX "candidate names"  $ map fst ctx
+  traceMX "compItems " $  map snd compItems
   let gType = _jGoal jdg
       nonRec RecursivePrv = False
       nonRec (DisallowedPrv _ RecursivePrv) = False
       nonRec _ = True
       hypType = filter (nonRec . hi_provenance) $ unHypothesis $ _jHypothesis jdg
-  pure $ scoreContext ctx hypType gType
+      tyConsInScope = foldMap (tyCons . unCType .  hi_type) hypType
+      (_, _, directArgs, resTy) = tacticsSplitFunTy $ unCType gType
+      resCons = tyCons resTy
+      dirTyCons = foldMap tyCons directArgs
+      checkDirTyCons a
+        | null directArgs = overlaps (resCons <> tyConsInScope) a
+        | otherwise = overlaps (resCons <> dirTyCons) a
+  let
+    pairings =
+         [ (mkVarOcc (T.unpack compLab), CType ty)
+         | (CType ty, compLab) <- compItems
+         -- , T.pack lab `T.isInfixOf` compLab
+         , checkDirTyCons ty
+         ] ++
+         locals
+  let ctx =  pairings
+  traceMX "candidate names"  $ map fst ctx
+  skolems <- gets ts_skolems
+  pure $ scoreContext skolems ctx hypType gType
 
 
+overlaps :: IS.IntSet -> Type -> Bool
+overlaps is t = not $ IS.disjoint is (tyCons t)
+tyCons :: Type -> IS.IntSet
+tyCons (TyVarTy _) = mempty
+tyCons (AppTy l r) = IS.union (tyCons l) (tyCons r)
+tyCons (TyConApp tc tys) = inj tc <> foldMap tyCons tys
+  where
+    inj a
+      | isDataTyCon a = IS.singleton (getKey (getUnique a))
+      | otherwise = mempty
+tyCons (ForAllTy _ ty) = tyCons ty
+tyCons (FunTy _ ty ty2) = tyCons ty <> tyCons ty2
+tyCons (FunTy _ _ ty) = tyCons ty
+tyCons (LitTy _) = mempty
+tyCons (CastTy ty _) = tyCons ty
+tyCons (CoercionTy _) = mempty
 
 
 gatherIds :: Data a => a -> [Id]
@@ -412,6 +448,8 @@ onlyUsages a = do
     let o = countUsages s a
     #occCount %= M.unionWith (+) o
   
+-- bar :: M.Map Int String -> [String]
+-- bar = t
 
 
 -- ^ takes a set of 'important' identifiers, and counts how often each of them was used

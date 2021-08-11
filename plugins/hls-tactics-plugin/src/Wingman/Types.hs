@@ -50,6 +50,7 @@ import           UniqSupply (takeUniqFromSupply, mkSplitUniqSupply, UniqSupply)
 import           Unique (nonDetCmpUnique, Uniquable, getUnique, Unique, mkUnique)
 import           Wingman.Debug
 import Data.IORef
+import Development.IDE.Plugin.Completions.Types (CachedCompletions, CompItem)
 
 
 ------------------------------------------------------------------------------
@@ -486,8 +487,8 @@ data Context = Context
   , ctxTheta         :: Set CType
   , ctx_hscEnv       :: HscEnv
   , ctx_occEnv       :: OccEnv [GlobalRdrElt]
-  , ctx_typEnv       :: PackageTypeEnv
   , ctx_module       :: Module
+  , ctx_complEnv     :: [(CType, Text)]
   }
 
 instance Show Context where
@@ -515,7 +516,7 @@ emptyContext
       , ctx_hscEnv = error "empty hsc env from emptyContext"
       , ctx_occEnv = emptyOccEnv
       , ctx_module = error "empty module from emptyContext"
-      , ctx_typEnv = mempty
+      , ctx_complEnv = mempty
       }
 
 

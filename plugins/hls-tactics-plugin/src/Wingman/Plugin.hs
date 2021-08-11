@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | A plugin that uses tactics to synthesize code
 module Wingman.Plugin
@@ -16,8 +17,8 @@ import           Data.Data
 import           Data.Foldable (for_)
 import           Data.Maybe
 import qualified Data.Text as T
-import           Development.IDE.Core.Shake (IdeState (..))
-import           Development.IDE.Core.UseStale (Tracked, TrackedStale(..), unTrack, mapAgeFrom, unsafeMkCurrent)
+import           Development.IDE.Core.Shake (IdeState (..), ShakeExtras (clientCapabilities), getIdeOptionsIO)
+import           Development.IDE.Core.UseStale (Tracked, TrackedStale(..), unTrack, mapAgeFrom, unsafeMkCurrent, Age (Current))
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.ExactPrint
 import           Generics.SYB.GHC
@@ -40,6 +41,22 @@ import           Wingman.Range
 import           Wingman.StaticPlugin
 import           Wingman.Tactics
 import           Wingman.Types
+import qualified Language.LSP.Server as LSP
+import qualified Data.Set as Set
+import qualified Data.Map as Map
+import Development.IDE.Plugin.Completions.Types (anyQualCompls, getCompletionsConfig)
+import qualified Language.LSP.VFS                             as VFS
+import Development.IDE
+    ( uriToFilePath',
+      toNormalizedFilePath',
+      useWithStaleFast,
+      GetParsedModule(GetParsedModule),
+      runIdeAction )
+import Development.IDE.Plugin.Completions (LocalCompletions(LocalCompletions), NonLocalCompletions (NonLocalCompletions))
+import qualified Ide.Plugin.Config as Plugin
+import Control.Applicative (Alternative(empty))
+import Language.LSP.Types (TextDocumentEdit(_textDocument), DocumentSymbolOptions (_label))
+import qualified Data.Map as M
 
 
 descriptor :: PluginId -> PluginDescriptor IdeState
@@ -62,6 +79,7 @@ descriptor plId = (defaultPluginDescriptor plId)
       [ mkPluginHandler STextDocumentCodeAction codeActionProvider
       , mkPluginHandler STextDocumentCodeLens codeLensProvider
       , mkPluginHandler STextDocumentHover hoverProvider
+      , mkPluginHandler STextDocumentCompletion getCompletionsWingman
       ]
   , pluginRules = wingmanRules plId
   , pluginConfigDescriptor =
@@ -247,4 +265,75 @@ graftDecl dflags dst ix make_decl (L src (AMatch (FunRhs (L _ name) _ _) pats _)
           pure alts
         _ -> lift $ Left "annotateDecl didn't produce a funbind"
 graftDecl _ _ _ _ x = pure $ pure x
+
+
+-- foo :: Int -> M.Map Int String -> String
+-- foo i m = min
+
+--     baz :: a -> Tracked 'Current a
+--     baz a = unsafeMkCurrent a
+-- -- -- foo p = _end p
+-- | Generate code actions.
+-- LocalCompletions
+-- NonLocalCompletions
+getCompletionsWingman
+    :: IdeState
+    -> PluginId
+    -> CompletionParams
+    -> LSP.LspM  Plugin.Config (Either ResponseError (ResponseResult TextDocumentCompletion))
+getCompletionsWingman state pId
+  CompletionParams{_textDocument=TextDocumentIdentifier uri
+                  ,_position=pos
+                  ,_context=_completionContext}
+  | Just nfp <- uriToNormalizedFilePath $ toNormalizedUri uri = do
+      cfg <- getTacticConfig pId
+      mres <- liftIO $ runMaybeT $ do
+        traceMX "Wingman::completion" nfp
+        (word, HoleJudgment{..}) <- judgementFor state nfp (unsafeMkCurrent $ Range (pos{_character = _character pos - 1}) pos) cfg
+        traceMX "Wingman::hole" hj_jdg
+        let t = guess 2 (show word)
+
+        timingOut (cfg_timeout_seconds cfg * seconds) $ do
+          res <- liftIO $ runTactic hj_ctx hj_jdg t
+          pure $ join $ case res of
+            Left errs ->  do
+              traceMX "errs" errs
+              Left TacticErrors
+            Right rtr ->
+              case rtr_extract rtr of
+                L _ (HsVar _ (L _ rdr)) | isHole (occName rdr) ->
+                  Left NothingToDo
+                _ -> do
+                  traceMX "Completions" rtr
+                  pure $ Right $ InL $ List $ mkCompletions rtr
+      case mres of
+       Just (Right a) -> pure $ Right a
+       _ -> pure $ Right $ InL $ List []
+getCompletionsWingman _ _ _ = pure $ Left $ mkErr InvalidRequest "Bad URI"
+
+
+mkCompletions :: RunTacticResults  -> [CompletionItem]
+mkCompletions r = map mkCompletion ( rtr_extract r : (map syn_val $ rtr_other_solns r ))
+  where
+   mkCompletion :: LHsExpr GhcPs -> CompletionItem
+   mkCompletion ci = CompletionItem
+                  {_label = text,
+                   _kind = Just CiText,
+                   _tags = Nothing,
+                   _detail = Nothing,
+                   _documentation = Nothing,
+                   _deprecated = Nothing,
+                   _preselect = Nothing,
+                   _sortText = Just ("aaa" <> text),
+                   _filterText = Nothing,
+                   _insertText = Just text,
+                   _insertTextFormat = Just Snippet,
+                   _insertTextMode = Nothing,
+                   _textEdit = Nothing,
+                   _additionalTextEdits = Nothing,
+                   _commitCharacters = Nothing,
+                   _command = Nothing,
+                   _xdata = Nothing}
+     where
+        text = T.pack $ show (unLoc ci)
 

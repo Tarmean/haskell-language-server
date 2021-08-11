@@ -47,7 +47,7 @@ import           Development.IDE.Spans.LocalBindings (Bindings, getLocalScope)
 import qualified FastString
 import           GHC.Generics (Generic)
 import           Generics.SYB hiding (Generic)
-import           GhcPlugins (tupleDataCon, consDataCon, substTyAddInScope, ExternalPackageState, HscEnv (hsc_EPS), unpackFS)
+import           GhcPlugins (tupleDataCon, consDataCon, substTyAddInScope, ExternalPackageState, HscEnv (hsc_EPS, hsc_IC), unpackFS, InteractiveContext (ic_rn_gbl_env), globalRdrEnvElts, GlobalRdrElt (gre_name))
 import qualified Ide.Plugin.Config as Plugin
 import           Ide.Plugin.Properties
 import           Ide.PluginUtils (usePropertyLsp)
@@ -72,6 +72,10 @@ import           Wingman.StaticPlugin (pattern WingmanMetaprogram, pattern Metap
 import           Wingman.Types
 import Outputable (ppr)
 import Wingman.Relevancy (runAna, AnaState (depOnHoleParents))
+import Development.IDE.Plugin.Completions.Types (CompItem (..), CachedCompletions (unqualCompls, qualCompls), HackType (HackType), QualCompls (getQualCompls))
+import Development.IDE (useWithStaleFast)
+import Development.IDE.Plugin.Completions (LocalCompletions(LocalCompletions), NonLocalCompletions (NonLocalCompletions))
+import Development.IDE (runIdeAction)
 
 
 tacticDesc :: T.Text -> T.Text
@@ -192,42 +196,73 @@ getAllMetaprograms = everything (<>) $ mkQ mempty $ \case
 ------------------------------------------------------------------------------
 -- | Find the last typechecked module, and find the most specific span, as well
 -- as the judgement at the given range.
-judgementForHole
-    :: IdeState
+judgementForHole :: IdeState
     -> NormalizedFilePath
     -> Tracked 'Current Range
     -> Config
     -> MaybeT IO HoleJudgment
 judgementForHole state nfp range cfg = do
+  (occ, a) <- judgementFor state nfp range cfg
+  guard (isHole occ)
+  pure a
+judgementFor
+    :: IdeState
+    -> NormalizedFilePath
+    -> Tracked 'Current Range
+    -> Config
+    -> MaybeT IO (OccName, HoleJudgment)
+judgementFor state nfp range cfg = do
   let stale a = runStaleIde "judgementForHole" state nfp a
 
   TrackedStale asts amapping  <- stale GetHieAst
   case unTrack asts of
-    HAR _ _  _ _ (HieFromDisk _) -> fail "Need a fresh hie file"
+    HAR _ _  _ _ (HieFromDisk _) -> do
+      traceM "Need a fresh hie file"
+      fail "Need a fresh hie file"
     HAR _ (unsafeCopyAge asts -> hf) _ _ HieFresh -> do
+      traceM "Got a fresh hie file"
       range' <- liftMaybe $ mapAgeFrom amapping range
+      traceM "got range"
       binds <- stale GetBindings
+      traceM "got ibinds"
       tcg@(TrackedStale tcg_t tcg_map)
           <- fmap (fmap tmrTypechecked)
            $ stale TypeCheck
+      traceM "got typecheck"
 
       hscenv <- stale GhcSessionDeps
+      traceM "got hscenv"
 
-      (rss, g) <- liftMaybe $ getSpanAndTypeAtHole range' hf
+      (occ, rss, g) <- liftMaybe $ getSpanAndTypeAt range' hf
+      traceM "got got span at hole"
 
       new_rss <- liftMaybe $ mapAgeTo amapping rss
+      traceM "got sourcespan"
       tcg_rss <- liftMaybe $ mapAgeFrom tcg_map new_rss
+      traceM "got sourcespan2"
 
       -- KnownThings is just the instances in scope. There are no ranges
       -- involved, so it's not crucial to track ages.
       let henv = untrackedStaleValue $ hscenv
       eps <- liftIO $ readIORef $ hsc_EPS $ hscEnv henv
 
-      (jdg, ctx) <- liftMaybe $ mkJudgementAndContext cfg g binds new_rss tcg (hscEnv henv) eps
+      (Just (localCompls, _), Just (nonLocalCompls, _)) <- liftIO $ runIdeAction "Completion" (shakeExtras state) $ do
+              localCompls <- useWithStaleFast LocalCompletions nfp
+              nonLocalCompls <- useWithStaleFast NonLocalCompletions nfp
+              pure (localCompls, nonLocalCompls)
+      let
+        mkSingle k CI{isTypeCompl=False, rawType = Just (HackType ty), label = compLab} = [(CType ty, k <> compLab)]
+        mkSingle _ _ = []
+        mkUnqual = concatMap (mkSingle "") . unqualCompls
+        mkQual s = concat [mkSingle "" v | (k, vs) <- M.toList $ getQualCompls (qualCompls s), v <- vs]
+        compItems = mkUnqual localCompls <> mkUnqual nonLocalCompls <> mkQual localCompls <> mkQual nonLocalCompls
+      (jdg, ctx) <- liftMaybe $ mkJudgementAndContext cfg g binds new_rss tcg (hscEnv henv) eps compItems 
+      traceM "got jdgment ctx"
       let mp = getMetaprogramAtSpan (fmap RealSrcSpan tcg_rss) tcg_t
 
       dflags <- getIdeDynflags state nfp
-      pure $ HoleJudgment
+      traceM "got dynflags"
+      pure $ (occ,) $ HoleJudgment
         { hj_range = fmap realSrcSpanToRange new_rss
         , hj_jdg = jdg
         , hj_ctx = ctx
@@ -248,8 +283,9 @@ mkJudgementAndContext
     -> TrackedStale TcGblEnv
     -> HscEnv
     -> ExternalPackageState
+    -> [(CType, T.Text)]
     -> Maybe (Judgement, Context)
-mkJudgementAndContext cfg g (TrackedStale binds bmap) rss (TrackedStale tcg tcgmap) hscenv eps = do
+mkJudgementAndContext cfg g (TrackedStale binds bmap) rss (TrackedStale tcg tcgmap) hscenv compItem eps = do
   binds_rss <- mapAgeFrom bmap rss
   tcg_rss <- mapAgeFrom tcgmap rss
 
@@ -260,6 +296,7 @@ mkJudgementAndContext cfg g (TrackedStale binds bmap) rss (TrackedStale tcg tcgm
                 $ getLocalScope <$> binds <*> binds_rss)
               (unTrack tcg)
               hscenv
+              compItem
               eps
               evidence
       top_provs = getRhsPosVals tcg_rss tcs
@@ -308,11 +345,11 @@ getAlreadyDestructed (unTrack -> span) (unTrack -> binds) =
     ) binds
 
 
-getSpanAndTypeAtHole
+getSpanAndTypeAt
     :: Tracked age Range
     -> Tracked age (HieASTs b)
-    -> Maybe (Tracked age RealSrcSpan, b)
-getSpanAndTypeAtHole r@(unTrack -> range) (unTrack -> hf) = do
+    -> Maybe (OccName, Tracked age RealSrcSpan, b)
+getSpanAndTypeAt r@(unTrack -> range) (unTrack -> hf) = do
   join $ listToMaybe $ M.elems $ flip M.mapWithKey (getAsts hf) $ \fs ast ->
     case selectSmallestContaining (rangeToRealSrcSpan (FastString.unpackFS fs) range) ast of
       Nothing -> Nothing
@@ -326,8 +363,7 @@ getSpanAndTypeAtHole r@(unTrack -> range) (unTrack -> hf) = do
              . S.toList
              . M.keysSet
              $ nodeIdentifiers info
-        guard $ isHole occ
-        pure (unsafeCopyAge r $ nodeSpan ast', ty)
+        pure (occ, unsafeCopyAge r $ nodeSpan ast', ty)
 
 
 

@@ -90,7 +90,7 @@ use sat occ = do
 guess :: Int -> String -> TacticsM ()
 guess k lab = do
   unsafeModifyGoal $ \g -> g { _jGoal = substAny (_jGoal g) }
-  traceM "guess"
+  traceMX "guess" lab
   guesses <- bestContext lab
   let
     candidates
@@ -100,16 +100,30 @@ guess k lab = do
   traceMX "guesses: main" $ [ g |g@(_,n,_) <- guesses, show (hi_name n) == lab]
 
   asum $ flip map candidates $ \(_, occ, match) -> do
-      apply Saturated occ  <@> map mkMatchArg match
+      traceMX "GOT MATCH" (occ, match)
+      case match of
+        ArgMatch.PerfectMatch i ls -> do
+          apply (Unsaturated i) occ  <@> map mkOne ls
+          traceMX "POST MATCH PERFECT" occ
+        ArgMatch.ReorderMatch _ ls -> do
+           hyps <- unHypothesis <$> hyDiff intros
+           let
+             mkOne (ArgMatch.NestedHole a) = rule $ \jdg -> subgoal jdg {_jGoal = a}
+             mkOne (ArgMatch.Exact (ArgMatch.Arg (ArgMatch.AP i))) = assume (hi_name $ hyps !! i)
+             mkOne (ArgMatch.Exact (ArgMatch.Occ occ)) = assume occ
+           apply Saturated occ <@> map (asum . map mkOne) ls
 
-mkMatchArg :: ArgMatch.Match -> TacticsM ()
-mkMatchArg [a] =  mkOne a
-mkMatchArg ls
-  | (ty:_) <- [ty | ArgMatch.NestedHole ty <- ls] = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
-  | otherwise = asum (map mkOne ls)
-mkOne ::  ArgMatch.MOcc -> TacticsM ()
-mkOne (ArgMatch.NestedHole ty) = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
-mkOne (ArgMatch.Exact s) = assume s
+-- foo :: Int -> M.Map Int String -> Maybe String
+-- foo = fi
+
+-- mkMatchArg ()
+
+-- mkMatchArg ls
+--   | (ty:_) <- [ty | ArgMatch.NestedHole ty <- ls] = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
+--   -- | otherwise = asum (map mkOne ls)
+mkOne :: Either CType [OccName] -> TacticsM ()
+mkOne (Left ty) = rule $ \jdg -> subgoal jdg{ _jGoal = ty }
+mkOne (Right s) = asum (map assume s)
 
 unsafeModifyGoal :: (Judgement -> Judgement) -> TacticsM ()
 unsafeModifyGoal f = TacticT $ StateT $ \s -> pure ((), f s)

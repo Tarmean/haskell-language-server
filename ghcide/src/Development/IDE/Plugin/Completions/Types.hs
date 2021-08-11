@@ -21,6 +21,11 @@ import           Ide.PluginUtils              (usePropertyLsp)
 import           Ide.Types                    (PluginId)
 import           Language.LSP.Server          (MonadLsp)
 import           Language.LSP.Types           (CompletionItemKind (..), Uri)
+import GHC (Type)
+import Type (eqType, nonDetCmpType)
+import GhcPlugins (ppr)
+import Data.Function (on)
+import Development.IDE (unsafePrintSDoc)
 
 -- From haskell-ide-engine/src/Haskell/Ide/Engine/LSP/Completions.hs
 
@@ -68,6 +73,7 @@ data CompItem = CI
   , insertText          :: T.Text         -- ^ Snippet for the completion
   , importedFrom        :: Either SrcSpan T.Text         -- ^ From where this item is imported from.
   , typeText            :: Maybe T.Text   -- ^ Available type information.
+  , rawType             :: Maybe HackType   -- ^ Available type information.
   , label               :: T.Text         -- ^ Label to display to the user.
   , isInfix             :: Maybe Backtick -- ^ Did the completion happen
                                    -- in the context of an infix notation.
@@ -76,6 +82,16 @@ data CompItem = CI
   , additionalTextEdits :: Maybe ExtendImport
   }
   deriving (Eq, Show)
+newtype HackType = HackType { unHackType :: Type }
+
+instance Eq HackType where
+  (==) = eqType `on` unHackType
+
+instance Ord HackType where
+  compare = nonDetCmpType `on` unHackType
+
+instance Show HackType where
+  show  = unsafePrintSDoc  . ppr . unHackType
 
 -- Associates a module's qualifier with its members
 newtype QualCompls

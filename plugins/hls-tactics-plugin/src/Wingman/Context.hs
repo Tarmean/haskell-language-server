@@ -17,6 +17,8 @@ import           TysPrim (alphaTys)
 import           Wingman.GHC (normalizeType)
 import           Wingman.Judgements.Theta
 import           Wingman.Types
+import Development.IDE.Plugin.Completions.Types (CompItem)
+import Data.Text (Text)
 
 
 -- Path to autocompletion:
@@ -28,9 +30,10 @@ mkContext
     -> TcGblEnv
     -> HscEnv
     -> ExternalPackageState
+    -> [(CType, Text)]
     -> [Evidence]
     -> Context
-mkContext cfg locals tcg hscenv eps ev = fix $ \ctx ->
+mkContext cfg locals tcg hscenv eps compl ev = fix $ \ctx ->
   Context
     { ctxDefiningFuncs
         = fmap (second $ coerce $ normalizeType ctx) locals
@@ -53,7 +56,7 @@ mkContext cfg locals tcg hscenv eps ev = fix $ \ctx ->
     , ctx_hscEnv = hscenv
     , ctx_occEnv = tcg_rdr_env tcg
     , ctx_module = extractModule tcg
-    , ctx_typEnv = eps_PTE eps
+    , ctx_complEnv = compl
     }
 
 

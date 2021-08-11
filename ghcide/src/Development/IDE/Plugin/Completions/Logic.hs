@@ -30,11 +30,11 @@ import           HscTypes
 import           Name
 import           RdrName
 import           Type
-#if MIN_VERSION_ghc(8,10,0)
+
 import           Coercion
 import           Pair
 import           Predicate                                (isDictTy)
-#endif
+
 
 import           ConLike
 import           Control.Monad
@@ -63,6 +63,7 @@ import           Language.LSP.Types.Capabilities
 import qualified Language.LSP.VFS                         as VFS
 import           Outputable                               (Outputable)
 import           TyCoRep
+import Bag(bagToList)
 
 -- From haskell-ide-engine/hie-plugin-api/Haskell/Ide/Engine/Context.hs
 
@@ -215,6 +216,7 @@ mkNameCompItem :: Uri -> Maybe T.Text -> OccName -> ModuleName -> Maybe Type -> 
 mkNameCompItem doc thingParent origName origMod thingType isInfix docs !imp = CI {..}
   where
     compKind = occNameToComKind typeText origName
+    rawType = fmap HackType thingType
     importedFrom = Right $ showModName origMod
     isTypeCompl = isTcOcc origName
     label = stripPrefix $ showGhc origName
@@ -271,12 +273,12 @@ mkNameCompItem doc thingParent origName origMod thingType isInfix docs !imp = CI
                   then getArgs ret
                   else Prelude.filter (not . isDictTy) $ map scaledThing args
           | isPiTy t = getArgs $ snd (splitPiTys t)
-#if MIN_VERSION_ghc(8,10,0)
+
           | Just (Pair _ t) <- coercionKind <$> isCoercionTy_maybe t
           = getArgs t
-#else
-          | isCoercionTy t = maybe [] (getArgs . snd) (splitCoercionType_maybe t)
-#endif
+
+
+
           | otherwise = []
 
 mkModCompl :: T.Text -> CompletionItem
@@ -311,6 +313,7 @@ fromIdentInfo doc IdentInfo{..} q = CI
   , insertText=rendered
   , importedFrom=Right moduleNameText
   , typeText=Nothing
+  , rawType = Nothing
   , label=rendered
   , isInfix=Nothing
   , docs=emptySpanDoc
@@ -363,7 +366,7 @@ cacheDataProducer uri env curMod globalEnv inScopeEnv limports = do
                 -- we don't want to extend import if it's already in scope
                 guard . null $ lookupGRE_Name inScopeEnv n
                 -- or if it doesn't have a real location
-                loc <- realSpan $ is_dloc spec
+                loc <- realSpan $ is_dloc spec
                 Map.lookup loc importMap
           compItem <- toCompItem par curMod (is_mod spec) n originalImportDecl
           let unqual
@@ -411,9 +414,14 @@ cacheDataProducer uri env curMod globalEnv inScopeEnv limports = do
     , importableModules = moduleNames
     }
 
+
 -- | Produces completions from the top level declarations of a module.
-localCompletionsForParsedModule :: Uri -> ParsedModule -> CachedCompletions
-localCompletionsForParsedModule uri pm@ParsedModule{pm_parsed_source = L _ HsModule{hsmodDecls, hsmodName}} =
+-- switch to RenamedSource
+-- It contains HsGroup GhcRn
+-- Use these blocks to feed compls
+-- for each name, lookup type in TypeEnv
+localCompletionsForParsedModule :: Uri -> ParsedModule -> HsGroup GhcRn -> TypeEnv -> CachedCompletions
+localCompletionsForParsedModule uri pm@ParsedModule{pm_parsed_source = L _ HsModule{hsmodName}} hsmodDecls tyEnv =
     CC { allModNamesAsNS = mempty
        , unqualCompls = compls
        , qualCompls = mempty
@@ -421,55 +429,67 @@ localCompletionsForParsedModule uri pm@ParsedModule{pm_parsed_source = L _ HsMod
        , importableModules = mempty
         }
   where
+    (valBinds, valSigs) = case hs_valds hsmodDecls of
+        ValBinds _ valBinds valSigs -> (bagToList valBinds, valSigs) 
+        XValBindsLR (NValBinds  l r) -> (concatMap bagToList $ fmap snd l, r)
     typeSigIds = Set.fromList
         [ id
-            | L _ (SigD _ (TypeSig _ ids _)) <- hsmodDecls
+            | L _ (TypeSig _ ids _) <- valSigs
             , L _ id <- ids
             ]
     hasTypeSig = (`Set.member` typeSigIds) . unLoc
 
-    compls = concat
-        [ case decl of
-            SigD _ (TypeSig _ ids typ) ->
-                [mkComp id CiFunction (Just $ ppr typ) | id <- ids]
-            ValD _ FunBind{fun_id} ->
-                [ mkComp fun_id CiFunction Nothing
+    compls =
+        [ mkComp id CiFunction (Just $ ppr typ)
+        | L _ (TypeSig _ ids typ) <- valSigs
+        , L _ id <- ids] <>
+        concat [ case decl of
+            FunBind{fun_id} ->
+                [ mkComp (unLoc fun_id) CiFunction Nothing
                 | not (hasTypeSig fun_id)
                 ]
-            ValD _ PatBind{pat_lhs} ->
-                [mkComp id CiVariable Nothing
-                | VarPat _ id <- listify (\(_ :: Pat GhcPs) -> True) pat_lhs]
-            TyClD _ ClassDecl{tcdLName, tcdSigs} ->
-                mkComp tcdLName CiInterface Nothing :
-                [ mkComp id CiFunction (Just $ ppr typ)
-                | L _ (ClassOpSig _ _ ids typ) <- tcdSigs
-                , id <- ids]
-            TyClD _ x ->
+            PatBind{pat_lhs} ->
+                [mkComp (unLoc id) CiVariable Nothing
+                | VarPat _ id <- listify (\(_ :: Pat GhcRn) -> True) pat_lhs]
+            _ -> []
+        | L _ decl <- valBinds  ] <>
+        concat [ mkTyclCompl x
+               | tyclDecl <- hs_tyclds hsmodDecls
+               , L _ x <- group_tyclds tyclDecl
+               ] <>
+        concat [ case decl of
+            ForeignImport{fd_name,fd_sig_ty} ->
+                [mkComp (unLoc fd_name) CiVariable (Just $ ppr fd_sig_ty)]
+            ForeignExport{fd_name,fd_sig_ty} ->
+                [mkComp (unLoc fd_name) CiVariable (Just $ ppr fd_sig_ty)]
+            _ -> []
+            | L _ decl <- hs_fords hsmodDecls
+        ]
+    mkTyclCompl ClassDecl{tcdLName, tcdSigs} = 
+                  mkComp (unLoc tcdLName) CiInterface Nothing :
+                   [ mkComp id CiFunction (Just $ ppr typ)
+                   | L _ (ClassOpSig _ _ ids typ) <- tcdSigs
+                   , id <- fmap unLoc ids]
+    mkTyclCompl x = 
                 let generalCompls = [mkComp id cl Nothing
-                        | id <- listify (\(_ :: Located(IdP GhcPs)) -> True) x
-                        , let cl = occNameToComKind Nothing (rdrNameOcc $ unLoc id)]
+                        | id <- listify (\(_ ::(IdP GhcRn)) -> True) x
+                        , let cl = occNameToComKind Nothing (nameOccName $ unLoc id)]
                     -- here we only have to look at the outermost type
                     recordCompls = findRecordCompl uri pm thisModName x
                 in
                    -- the constructors and snippets will be duplicated here giving the user 2 choices.
                    generalCompls ++ recordCompls
-            ForD _ ForeignImport{fd_name,fd_sig_ty} ->
-                [mkComp fd_name CiVariable (Just $ ppr fd_sig_ty)]
-            ForD _ ForeignExport{fd_name,fd_sig_ty} ->
-                [mkComp fd_name CiVariable (Just $ ppr fd_sig_ty)]
-            _ -> []
-            | L _ decl <- hsmodDecls
-        ]
 
     mkComp n ctyp ty =
-        CI ctyp pn (Right thisModName) ty pn Nothing doc (ctyp `elem` [CiStruct, CiInterface]) Nothing
+        CI ctyp pn (Right thisModName) ty rawTy pn Nothing doc (ctyp `elem` [CiStruct, CiInterface]) Nothing
       where
         pn = ppr n
         doc = SpanDocText (getDocumentation [pm] n) (SpanDocUris Nothing Nothing)
+        rawTy = fmap HackType $ safeTyThingType =<< lookupTypeEnv tyEnv n
 
     thisModName = ppr hsmodName
 
-findRecordCompl :: Uri -> ParsedModule -> T.Text -> TyClDecl GhcPs -> [CompItem]
+findRecordCompl :: Uri -> ParsedModule -> T.Text -> TyClDecl GhcRn -> [CompItem]
 findRecordCompl uri pmod mn DataDecl {tcdLName, tcdDataDefn} = result
     where
         result = [mkRecordSnippetCompItem uri (Just $ showNameWithoutUniques $ unLoc tcdLName)
@@ -482,7 +502,7 @@ findRecordCompl uri pmod mn DataDecl {tcdLName, tcdDataDefn} = result
                  ]
         doc = SpanDocText (getDocumentation [pmod] tcdLName) (SpanDocUris Nothing Nothing)
 
-        getFlds :: HsConDetails arg (Located [LConDeclField GhcPs]) -> Maybe [ConDeclField GhcPs]
+        getFlds :: HsConDetails arg (Located [LConDeclField GhcRn]) -> Maybe [ConDeclField GhcRn]
         getFlds conArg = case conArg of
                              RecCon rec  -> Just $ unLoc <$> unLoc rec
                              PrefixCon _ -> Just []
@@ -579,12 +599,13 @@ getCompletions plId ideOpts CC {allModNamesAsNS, anyQualCompls, unqualCompls, qu
           endLoc = upperRange oldPos
           localCompls = map (uncurry localBindsToCompItem) $ getFuzzyScope localBindings startLoc endLoc
           localBindsToCompItem :: Name -> Maybe Type -> CompItem
-          localBindsToCompItem name typ = CI ctyp pn thisModName ty pn Nothing emptySpanDoc (not $ isValOcc occ) Nothing
+          localBindsToCompItem name typ = CI ctyp pn thisModName ty hty pn Nothing emptySpanDoc (not $ isValOcc occ) Nothing
             where
               occ = nameOccName name
               ctyp = occNameToComKind Nothing occ
               pn = ppr name
               ty = ppr <$> typ
+              hty = HackType <$> typ
               thisModName = case nameModule_maybe name of
                 Nothing -> Left $ nameSrcSpan name
                 Just m  -> Right $ ppr m
@@ -787,6 +808,7 @@ mkRecordSnippetCompItem uri parent ctxStr compl mn docs imp = r
           , insertText = buildSnippet
           , importedFrom = importedFrom
           , typeText = Nothing
+          , rawType = Nothing
           , label = ctxStr
           , isInfix = Nothing
           , docs = docs

@@ -50,6 +50,7 @@ import qualified Language.LSP.VFS                             as VFS
 import           GHC.Tc.Module                                (tcRnImportDecls)
 #else
 import           TcRnDriver                                   (tcRnImportDecls)
+import TcRnMonad (tcg_type_env)
 #endif
 
 descriptor :: PluginId -> PluginDescriptor IdeState
@@ -64,10 +65,11 @@ produceCompletions :: Rules ()
 produceCompletions = do
     define $ \LocalCompletions file -> do
         let uri = fromNormalizedUri $ normalizedFilePathToUri file
-        pm <- useWithStale GetParsedModule file
+        pm <- useWithStale TypeCheck file
         case pm of
             Just (pm, _) -> do
-                let cdata = localCompletionsForParsedModule uri pm
+                let (defs, _, _, _) = tmrRenamed pm
+                let cdata = localCompletionsForParsedModule uri (tmrParsed pm) defs (tcg_type_env $ tmrTypechecked pm)
                 return ([], Just cdata)
             _ -> return ([], Nothing)
     define $ \NonLocalCompletions file -> do
