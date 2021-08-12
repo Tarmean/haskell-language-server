@@ -16,7 +16,7 @@ import Control.Lens ((%=), (?=), at, (<+=), use, (<-=), non)
 import GHC.Generics (Generic)
 import Data.Generics.Labels ()
 import qualified Data.Set as S
-import Wingman.Types (CType(CType, unCType), HyInfo (HyInfo))
+import Wingman.Types (CType(CType, unCType), HyInfo (HyInfo), traceX, traceMX)
 import Control.Applicative (empty, Alternative ((<|>)))
 import Data.Foldable (asum)
 import Control.Monad (replicateM_, guard, when, unless)
@@ -130,7 +130,7 @@ getUnusedArgs (ReorderMatch givenCount moss) = givenCount -  S.size (S.fromList 
 
 -- TODO: sort by concreteness
 runMatcher :: Context -> CType -> Maybe (Double, ParsedMatch)
-runMatcher c (CType t) = case execStateT (tellC (thetaCost theta) *> matchArgs c ag (CType res)) (mState0 $ env c) of
+runMatcher c (CType t) = case execStateT (tellC (thetaCost theta) *> matchArgs c ag (CType res)) (mState0 c) of
                (x:_) -> 
                  let parsed =  parseMatch (appliedCount c) [ M.findWithDefault [NestedHole (CType typ)] (AP idx) (matchOut x) | (typ, idx) <- zip args [0..] ]
                      unusedArgs = getUnusedArgs  parsed 
@@ -142,15 +142,15 @@ runMatcher c (CType t) = case execStateT (tellC (thetaCost theta) *> matchArgs c
     ag =  AG $ M.fromListWith (<>) [(CType t, [AP i]) | (t, i) <- zip args [0..]]
 
 
-mState0 :: EnvGroup -> MState
-mState0 eg= MState {
-    openEnv = eg,
-    haveCount = M.fromList [ (t, length v) | (t,v) <- unEG eg],
+mState0 :: Context -> MState
+mState0 c = MState {
+    openEnv = env c,
+    haveCount = M.fromList [ (t, length v) | (t,v) <- unEG (env c)],
     cost=0,
     maxCost = defMaxCost,
     unifier = emptyTCvSubst,
     matchOut = mempty,
-    skolems = mempty
+    skolems = skolem c
   }
   where defMaxCost = 15
 
@@ -248,7 +248,7 @@ uniqMatchCost :: Double
 uniqMatchCost = -5
 
 thetaCost :: Foldable t => t a -> Double
-thetaCost a = 0.1 * fromIntegral (length a)
+thetaCost a = -0.1 * fromIntegral (length a)
 
 parsedCost :: ParsedMatch -> Double
 parsedCost (PerfectMatch i _)
@@ -267,8 +267,11 @@ unify goal inst0 = do
   skol <- gets skolems
   case tryUnifyUnivarsButNotSkolems skol goal inst of
     Just subst -> do
+      -- traceMX "unify succ" (goal, inst0, inst, skol)
       #unifier %= unionTCvSubst subst
     Nothing -> empty
+      -- traceMX "unify failed" (goal, inst0, inst)
+
 
 -- tc_unify_tys_fg :: Bool
 --                 -> (TyVar -> BindFlag)

@@ -291,7 +291,7 @@ getCompletionsWingman state pId
         traceMX "Wingman::completion" nfp
         (word, HoleJudgment{..}) <- judgementFor state nfp (unsafeMkCurrent $ Range (pos{_character = _character pos - 1}) pos) cfg
         traceMX "Wingman::hole" hj_jdg
-        let t = guess 2 (show word)
+        let t = guess 10 (show word)
 
         timingOut (cfg_timeout_seconds cfg * seconds) $ do
           res <- liftIO $ runTactic hj_ctx hj_jdg t
@@ -304,7 +304,6 @@ getCompletionsWingman state pId
                 L _ (HsVar _ (L _ rdr)) | isHole (occName rdr) ->
                   Left NothingToDo
                 _ -> do
-                  traceMX "Completions" rtr
                   pure $ Right $ InL $ List $ mkCompletions rtr
       case mres of
        Just (Right a) -> pure $ Right a

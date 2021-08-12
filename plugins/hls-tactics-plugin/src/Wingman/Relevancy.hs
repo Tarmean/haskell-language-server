@@ -14,9 +14,7 @@ import Wingman.Types
 import Data.List (sortOn, partition)
 import Control.Monad.Reader
 import Type (varType, splitTyConApp_maybe)
-import RdrName (GlobalRdrElt(gre_name), globalRdrEnvElts)
 import Data.Maybe (maybeToList, mapMaybe)
-import UniqFM (lookupUFM)
 import Refinery.Tactic
 import Development.IDE (unsafePrintSDoc)
 import Outputable (ppr)
@@ -27,11 +25,10 @@ import Unique
 import qualified Data.IntMap as IM
 import Data.Function (on)
 import Data.Ord (comparing)
-import Data.Data (Data, cast, gcast, Typeable)
+import Data.Data (Data)
 import           Data.Generics.Labels ()
 import SrcLoc (containsSpan)
 import qualified Data.Set as S
-import qualified Data.List as List
 import qualified Data.Map as M
 import Control.Monad.State
 import Bag (bagToList)
@@ -39,13 +36,11 @@ import Control.Lens
 import GHC.Generics (Generic)
 import TysWiredIn (anyTyCon)
 import qualified Wingman.ArgMatch as ArgMatch
-import TyCoRep (Type(..), AnonArgFlag (VisArg))
-import qualified UniqSet as US
-import qualified Data.IntSet as IS
-import BasicTypes (isKindLevel)
-import TyCon (isDataTyCon)
-import Development.IDE.Plugin.Completions.Types
+import TyCoRep (Type(..))
+import TyCon ( isDataTyCon, tyConName )
 import qualified Data.Text as T
+import InstEnv (InstEnvs (ie_global, ie_local), instEnvElts, orphNamesOfClsInst, ClsInst (is_cls_nm))
+import GhcPlugins (nameSetElemsStable)
 type Tags = UniqSet TyCon
 data TypTags = TypTags { argCount :: Int, posCtor :: UniqSet TyCon, negCtor :: UniqSet TyCon, constraintTags :: UniqSet TyCon }
 
@@ -61,12 +56,12 @@ data PatContext = PatContext {
     moduleContext :: Tags
 }
 instance Show PatContext where
-    show PatContext {..} 
-      =  "PatContext { resultTags=" ++  showUS resultTags 
+    show PatContext {..}
+      =  "PatContext { resultTags=" ++  showUS resultTags
       ++ ", applidCount=" ++ show appliedCount
-      ++ ", appliedTags=" ++ showUS appliedTags 
-      ++ ", localTags=" ++ showUS localTags 
-      ++ ", localContext=" ++ showUS localContext 
+      ++ ", appliedTags=" ++ showUS appliedTags
+      ++ ", localTags=" ++ showUS localTags
+      ++ ", localContext=" ++ showUS localContext
       ++"}"
         where
           showUS = unsafePrintSDoc . Uniq.pprUniqSet ppr
@@ -114,7 +109,7 @@ instance Monoid TypTags where
         {argCount = 0, posCtor = mempty, negCtor = mempty, constraintTags = mempty}
 
 foo :: ()
-foo = () 
+foo = ()
   where
     bar :: M.Map Int String -> [String]
     bar m = map show $ bar m
@@ -142,7 +137,7 @@ gatherTy  ty
     go :: Type -> TypTags
     go ty
       | (_vars, _theta, _:_,ks) <- tacticsSplitFunTy ty = mempty -- go ks
-      | Just (k,ks) <- splitTyConApp_maybe ty = 
+      | Just (k,ks) <- splitTyConApp_maybe ty =
         if k == anyTyCon
         then mempty
         else mkPos k <> foldMap go ks
@@ -174,7 +169,7 @@ instance Ord Score where
 type Score = ScoreF Double
 scoreTags :: PatContext -> TypTags -> Score
 scoreTags goal try
-    = 
+    =
     Score
     { goalCost =  25 * costForGoal,
       unwantedResultCtor = unwantedResult,
@@ -194,7 +189,7 @@ scoreTags goal try
       | isPolymorphic = 50
       | otherwise = 9001
 
-    unwantedResult 
+    unwantedResult
       | Uniq.isEmptyUniqSet (resultTags goal) = 0
       | all (`Uniq.elementOfUniqSet` resultTags goal) (nonDetEltsUniqSet $ posCtor try) = 0
       | otherwise = 50
@@ -233,7 +228,7 @@ scoreTags goal try
 
 
 scaleByArity :: UniqSet TyCon -> TyCon -> Double
-scaleByArity us 
+scaleByArity us
   | totalSigArity == 0 = const 1
   | otherwise = \x -> arityMult x / totalSigArity
   where
@@ -261,10 +256,9 @@ scoreContext skolems ls hyps goal
   --   gatherCTy (CType c) = gatherTy c
   where
     ctx = ArgMatch.mkContext skolems hyps goal
-    
+
 bestContext :: String -> TacticsM [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
 bestContext lab = do
-  locals <- asks ctxModuleFuncs
   compItems <- asks ctx_complEnv
   -- traceMX "some tys" $ take 100 $ concatMap (getTy . snd) $ nonDetUFMToList tyEnv
   def <- asks (fmap fst . ctxDefiningFuncs)
@@ -274,44 +268,64 @@ bestContext lab = do
   traceMX "hyps " (_jHypothesis jdg)
   traceMX "compItems " $  map snd compItems
   let gType = _jGoal jdg
+
       nonRec RecursivePrv = False
       nonRec (DisallowedPrv _ RecursivePrv) = False
       nonRec _ = True
       hypType = filter (nonRec . hi_provenance) $ unHypothesis $ _jHypothesis jdg
+      recHypTypes = S.fromList $ map (show . hi_name) $ filter (not . nonRec . hi_provenance) $ unHypothesis $ _jHypothesis jdg
       tyConsInScope = foldMap (tyCons . unCType .  hi_type) hypType
       (_, _, directArgs, resTy) = tacticsSplitFunTy $ unCType gType
       resCons = tyCons resTy
       dirTyCons = foldMap tyCons directArgs
-      checkDirTyCons a
-        | null directArgs = overlaps (resCons <> tyConsInScope) a
-        | otherwise = overlaps (resCons <> dirTyCons) a
+
+      appCons
+        | null directArgs = resCons <> tyConsInScope
+        | otherwise = resCons <> dirTyCons
+      checkDirTyCons a = overlaps appCons a
+  insts <- asks ctxInstEnvs
+  let
+     -- maybe normalize so Int doesn't bring in all the scopes?
+     instanceTags :: S.Set Name
+     instanceTags =
+         S.fromList [ is_cls_nm ispec
+         | ispec <- instEnvElts (ie_local insts) <> instEnvElts (ie_global insts)
+         , n <- nameSetElemsStable $ orphNamesOfClsInst ispec
+         , S.member  n appCons
+         ]
+     fullTags = S.union appCons instanceTags
+  traceMX "filter tags" appCons
+  traceMX "instance tags" instanceTags
   let
     pairings =
-         [ (mkVarOcc (T.unpack compLab), CType ty)
+         [ (occ, CType ty)
          | (CType ty, compLab) <- compItems
-         -- , T.pack lab `T.isInfixOf` compLab
-         , checkDirTyCons ty
-         ] ++
-         locals
+         , T.pack lab `T.isPrefixOf` compLab
+         , overlaps fullTags ty
+         , let occ = mkVarOcc (T.unpack compLab)
+         , not (show occ `S.member` recHypTypes)
+         ]
   let ctx =  pairings
   traceMX "candidate names"  $ map fst ctx
   skolems <- gets ts_skolems
   pure $ scoreContext skolems ctx hypType gType
 
 
-overlaps :: IS.IntSet -> Type -> Bool
-overlaps is t = not $ IS.disjoint is (tyCons t)
-tyCons :: Type -> IS.IntSet
+-- overlaps :: S.Set Name -> Type -> Bool
+-- overlaps is t = intersec
+overlaps :: S.Set Name -> Type -> Bool
+overlaps is t = not $ S.null $ S.intersection is (tyCons t)
+tyCons :: Type -> S.Set Name
 tyCons (TyVarTy _) = mempty
-tyCons (AppTy l r) = IS.union (tyCons l) (tyCons r)
+tyCons (AppTy l r) = S.union (tyCons l) (tyCons r)
 tyCons (TyConApp tc tys) = inj tc <> foldMap tyCons tys
   where
     inj a
-      | isDataTyCon a = IS.singleton (getKey (getUnique a))
+      | isDataTyCon a = S.singleton (tyConName a)
       | otherwise = mempty
 tyCons (ForAllTy _ ty) = tyCons ty
 tyCons (FunTy _ ty ty2) = tyCons ty <> tyCons ty2
-tyCons (FunTy _ _ ty) = tyCons ty
+-- tyCons (FunTy _ _ ty) = tyCons ty
 tyCons (LitTy _) = mempty
 tyCons (CastTy ty _) = tyCons ty
 tyCons (CoercionTy _) = mempty
@@ -373,7 +387,7 @@ skipLevel :: (Data a) => (forall d. Data d => d -> M ()) -> a -> M ()
 skipLevel = gmapQl (>>) (pure ())
 
 deepBinds :: forall a. (Data a) => a -> M ()
-deepBinds = skipLevel deepBinds `extQ` varUsage `extQ` maybeRecBindBag 
+deepBinds = skipLevel deepBinds `extQ` varUsage `extQ` maybeRecBindBag
 
 
 
@@ -393,7 +407,7 @@ guessName (VarBind _ ip _ _) = Just $ getOccName ip
 guessName AbsBinds {} = Nothing
 guessName (PatSynBind _ _) = Nothing
 guessName (XHsBindsLR xhbl) =   noExtCon xhbl
-   
+
 maybeRecBindBag :: LHsBindsLR GhcTc GhcTc -> M ()
 maybeRecBindBag hs = do
    hl <- asks holeLoc
@@ -447,7 +461,7 @@ onlyUsages a = do
     s <- asks inScopeAtHole
     let o = countUsages s a
     #occCount %= M.unionWith (+) o
-  
+
 -- bar :: M.Map Int String -> [String]
 -- bar = t
 
