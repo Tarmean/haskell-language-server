@@ -105,7 +105,7 @@ guess k lab = do
         ArgMatch.PerfectMatch i ls -> do
           apply (Unsaturated i) occ  <@> map mkOne ls
           traceMX "POST MATCH PERFECT" occ
-        ArgMatch.ReorderMatch _ ls -> do
+        ArgMatch.ReorderMatch _ _ ls -> do
            hyps <- unHypothesis <$> hyDiff intros
            let
              mkOne (ArgMatch.NestedHole a) = rule $ \jdg -> subgoal jdg {_jGoal = a}

@@ -13,7 +13,7 @@ import OccName
 import Wingman.Types
 import Data.List (sortOn, partition)
 import Control.Monad.Reader
-import Type (varType, splitTyConApp_maybe)
+import Type (splitTyConApp_maybe)
 import Data.Maybe (maybeToList, mapMaybe)
 import Refinery.Tactic
 import Development.IDE (unsafePrintSDoc)
@@ -108,11 +108,6 @@ instance Monoid TypTags where
     = TypTags
         {argCount = 0, posCtor = mempty, negCtor = mempty, constraintTags = mempty}
 
-foo :: ()
-foo = ()
-  where
-    bar :: M.Map Int String -> [String]
-    bar m = map show $ bar m
 
 mkPos :: TyCon -> TypTags
 mkPos a = mempty { posCtor = unitUniqSet a }
@@ -136,13 +131,12 @@ gatherTy  ty
   where
     go :: Type -> TypTags
     go ty
-      | (_vars, _theta, _:_,ks) <- tacticsSplitFunTy ty = mempty -- go ks
+      | (_vars, _theta, _:_,_ks) <- tacticsSplitFunTy ty = mempty -- go ks
       | Just (k,ks) <- splitTyConApp_maybe ty =
         if k == anyTyCon
         then mempty
         else mkPos k <> foldMap go ks
       | otherwise = gmapQl mappend mempty (mkQ mempty go) ty
-
 gatherConstraints :: PredType -> TypTags
 gatherConstraints = everything (<>) (mkQ mempty mkConstraint)
 
@@ -248,7 +242,8 @@ scaleByArity us
 scoreContext :: S.Set TyVar  -> [(OccName, CType)] -> [HyInfo CType] -> CType -> [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
 scoreContext skolems ls hyps goal
   | traceX "scoreContext ctx" ctx False = undefined
-  | otherwise = sortOn (\(a,_,_) -> a) [ (cost, HyInfo candidate UserPrv ct, matches)| (candidate, ct) <- ls, (cost, matches) <- maybeToList (ArgMatch.runMatcher ctx ct) ]
+  | otherwise = takePlausible $ sortOn (\(a,_,_) -> a) [ (cost, HyInfo candidate UserPrv ct, matches)| (candidate, ct) <- ls, (cost, matches) <- maybeToList (ArgMatch.runMatcher ctx ct) ]
+-- traceX "attempt "(candidate, ct) $ 
   -- = sortOn (\(a,_,_) -> a) [ ( scoreTags patCtx candidate, n, typ) | (n, typ) <- ls, let candidate = gatherCTy typ ]  where
   --   TypTags { posCtor=localTags } =  foldMap gatherCTy ctx
   --   TypTags {argCount =argCount, posCtor = resTags, negCtor = appliedTags} = gatherCTy goal
@@ -256,6 +251,10 @@ scoreContext skolems ls hyps goal
   --   gatherCTy (CType c) = gatherTy c
   where
     ctx = ArgMatch.mkContext skolems hyps goal
+
+    takePlausible [] = []
+    takePlausible ((x,y,z):ls) = (x,y,z) : takeWhile ((<= x+10) . scr) ls
+    scr (x,_,_) = x
 
 bestContext :: String -> TacticsM [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
 bestContext lab = do

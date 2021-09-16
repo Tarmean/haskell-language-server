@@ -12,27 +12,29 @@ import OccName (OccName)
 import Control.Monad.State.Strict ( gets, StateT, forM_, execStateT )
 import qualified Data.Map.Strict as M
 import Wingman.GHC (tryUnifyUnivarsButNotSkolems, tacticsSplitFunTy)
-import Control.Lens ((%=), (?=), at, (<+=), use, (<-=), non)
+import Control.Lens ((%=), (?=), at, (<+=), use, iso)
 import GHC.Generics (Generic)
 import Data.Generics.Labels ()
 import qualified Data.Set as S
-import Wingman.Types (CType(CType, unCType), HyInfo (HyInfo), traceX, traceMX)
+import Wingman.Types (CType(CType, unCType), HyInfo (HyInfo))
 import Control.Applicative (empty, Alternative ((<|>)))
 import Data.Foldable (asum)
-import Control.Monad (replicateM_, guard, when, unless)
+import Control.Monad (replicateM_, guard, when, unless, forM)
 import TyCon (TyCon)
 import Data.Generics.Schemes (everything)
 import Data.Generics (mkQ)
-import Unify (tcUnifyTy)
 import Data.Maybe (isJust)
 import Wingman.Machinery (substCTy)
-
-
-
-
-
-
-
+import Unify (tcUnifyTy)
+import Data.Containers.ListUtils (nubOrd)
+import Wingman.Debug (traceMX)
+import Control.Monad.Trans.Writer
+import Data.List.Extra (minimumOn, sortOn)
+import Util (ordNub)
+import Data.Unique (Unique)
+import GhcPlugins (getUnique)
+import Data.Data (Data)
+import Data.Ord (Down(Down))
 
 
 
@@ -55,14 +57,14 @@ import Wingman.Machinery (substCTy)
 
 -- Things in scope, will contain constraints in the future
 data InScope = Occ OccName | Arg ArgPos
-  deriving (Show, Eq, Ord, Generic)
+  deriving (Show, Eq, Ord, Generic, Data)
 newtype EnvGroup = EG { unEG :: [(CType, [InScope])] }
   deriving (Show, Generic)
 data Context = Ctx { env :: !EnvGroup, appliedCount :: Int, holeTy :: !ResultTy, skolem :: S.Set TyVar }
   deriving Show
 type ResultTy = CType
 newtype ArgPos = AP Int
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Data)
 -- Arguments, most concrete types come first
 newtype ArgGroup = AG { unAG :: M.Map CType [ArgPos] }
   deriving Show
@@ -70,20 +72,23 @@ newtype ArgGroup = AG { unAG :: M.Map CType [ArgPos] }
 type PMatch = [MOcc]
 data MOcc = NestedHole CType | Exact InScope
   deriving (Eq, Ord, Show)
-data ParsedMatch = PerfectMatch Int [Either CType [OccName]] | ReorderMatch Int [PMatch]
+data ParsedMatch = PerfectMatch Int [Either CType [OccName]] | ReorderMatch Int Int [PMatch]
   deriving (Show, Eq, Ord, Generic)
+unusedCount :: ParsedMatch -> Int
+unusedCount PerfectMatch {} = 0
+unusedCount (ReorderMatch _ i _)  = i
 
 parseMatch :: Int -> [PMatch] -> ParsedMatch
-parseMatch argCount pm 
+parseMatch argCount pm
   | Just ls <- traverse withoutPositional noArg
-  , length pm >= argCount
   , checkPerfectArgs = PerfectMatch argCount ls
-  | otherwise = ReorderMatch argCount pm
+  | otherwise = ReorderMatch argCount (argCount - usedArgs) pm
   where
     argLen = length pm
     (noArg, args) = splitAt (argLen - argCount) pm
-    checkPerfectArgs = and $ zipWith elem perfectArgs args
+    checkPerfectArgs = length perfectArgs == length args && and (zipWith elem perfectArgs args)
     perfectArgs = [Exact (Arg (AP i)) | i <- [0..argCount-1] ]
+    usedArgs = length $ nubOrd [ap | m <- pm, Exact (Arg ap) <- m]
 
 -- either grab the hole types or all occnames that could occur
 -- If there are any positional arguments here then they don't follow the
@@ -120,37 +125,35 @@ mkContext  skolems hys goal = Ctx eg (M.size dirArgs) (CType res) skolems'
     occArgs =   M.fromListWith (<>) [(t, [Occ occ]) | HyInfo occ _ t  <- hys]
     dirArgs =  M.fromListWith (<>) [(CType t, [Arg (AP idx)]) |  (idx, t) <- zip [0..] directArg]
     -- FIXME: use theta
-    (_tyVar, _theta, directArg, res) = tacticsSplitFunTy $ unCType goal
+    (tyVar, _theta, directArg, res) = tacticsSplitFunTy $ unCType goal
 
-    skolems' = skolems
+    skolems' = S.union (S.fromList tyVar) skolems
 
-getUnusedArgs :: ParsedMatch -> Int
-getUnusedArgs (PerfectMatch _ _) = 0
-getUnusedArgs (ReorderMatch givenCount moss) = givenCount -  S.size (S.fromList [ p | m <- moss, Exact (Arg p) <- m])
 
 -- TODO: sort by concreteness
 runMatcher :: Context -> CType -> Maybe (Double, ParsedMatch)
-runMatcher c (CType t) = case execStateT (tellC (thetaCost theta) *> matchArgs c ag (CType res)) (mState0 c) of
-               (x:_) -> 
-                 let parsed =  parseMatch (appliedCount c) [ M.findWithDefault [NestedHole (CType typ)] (AP idx) (matchOut x) | (typ, idx) <- zip args [0..] ]
-                     unusedArgs = getUnusedArgs  parsed 
-                 in Just (cost x + parsedCost parsed + unusedArgCost unusedArgs,parsed)
+runMatcher c (CType t) = case execStateT (tellC (thetaCost theta) *> matchArgs c ag (CType res)) (mState0 $ env c) of
                [] -> Nothing
+               ls -> Just $  minimumOn fst $ map rateByCost $ take 20 ls
   where
     -- TODO: take constraints into account
     (_vars, theta, args, res) = tacticsSplitFunTy t
     ag =  AG $ M.fromListWith (<>) [(CType t, [AP i]) | (t, i) <- zip args [0..]]
+    rateByCost x =
+             let parsed =  parseMatch (appliedCount c) [ M.findWithDefault [NestedHole (CType typ)] (AP idx) (matchOut x) | (typ, idx) <- zip args [0..] ]
+                 unusedArgs =  unusedCount parsed
+             in (cost x + parsedCost parsed + unusedArgCost unusedArgs,parsed)
 
 
-mState0 :: Context -> MState
-mState0 c = MState {
-    openEnv = env c,
-    haveCount = M.fromList [ (t, length v) | (t,v) <- unEG (env c)],
+mState0 :: EnvGroup -> MState
+mState0 eg= MState {
+    openEnv = eg,
+    haveCount = M.fromList [  (k, length vs) | (k, vs) <- unEG eg],
     cost=0,
     maxCost = defMaxCost,
     unifier = emptyTCvSubst,
     matchOut = mempty,
-    skolems = skolem c
+    skolems = mempty
   }
   where defMaxCost = 15
 
@@ -158,24 +161,33 @@ forAltsM_ :: Alternative f => [a] -> (a -> f ()) -> f ()
 forAltsM_ ls f = () <$ asum (map f ls)
 matchArgs :: Context -> ArgGroup -> ResultTy -> M ()
 matchArgs Ctx { holeTy } (AG wantedArgs) resultTy = do
-  -- FIXME: allow wrong return type at large cost,
-  -- but that doesn't work when returning to wingman
   unify holeTy resultTy
   unless (isPolyTy holeTy || isPolyTy resultTy)
          (tellC uniqMatchCost)
 
-  forM_ (M.toList wantedArgs) $ \(want, poss) -> do
+  forM_ (sortByConcrete $ M.toList wantedArgs) $ \(want, poss) -> do
     let wantPoly = isPolyTy want
     orHole resultTy want poss $ do
-      EG env <- use #openEnv
-      forAltsM_ env $ \(given, occs) -> do
-       dropEnv (length poss) given
-       unify given want
-       scoreGroups (wantPoly || isPolyTy given) want poss occs
-dropEnv :: Int -> CType -> M ()
-dropEnv times ct = do
-   new <- #haveCount . at ct . non 0 <-=  times
-   guard (new >= 0)
+        EG env <- use #openEnv
+        -- traceMX "matchWith" (poss, want, env)
+        forAltsM_ (sortByConcrete env) $ \(given, occs) -> do
+         -- traceMX "tryMatch" (poss, want, occs, given)
+         unify given want
+         dropEnv given
+         scoreGroups (wantPoly || isPolyTy given) want poss occs
+
+sortByConcrete :: Data a => [a] -> [a]
+sortByConcrete = sortOn (Down . length . allTyCons)
+
+
+-- >>> foo
+
+foo :: [[(Int, Char)]]
+foo = (execWriterT $ forM_ [1,2] $ \i -> forAltsM_ ['a', 'b'] $ \j -> tell [(i,j)]) :: [[(Int, Char)]]
+
+
+dropEnv :: CType -> M ()
+dropEnv ct = #openEnv . iso unEG EG  %= filter ((/= ct) . fst)
 
 orHole :: CType -> CType -> [ArgPos] -> M () -> M ()
 orHole origGoal ty poss m = m <|> fallBack
@@ -213,7 +225,7 @@ scoreGroups _ typ ps os = do
 
 isPolyTy :: CType -> Bool
 isPolyTy = null . allTyCons . unCType
-allTyCons :: Type -> [TyCon]
+allTyCons :: (Data a2) => a2 -> [TyCon]
 allTyCons = everything (<>) (mkQ mempty pure)
 
 tellC :: Double -> M ()
@@ -248,7 +260,7 @@ uniqMatchCost :: Double
 uniqMatchCost = -5
 
 thetaCost :: Foldable t => t a -> Double
-thetaCost a = -0.1 * fromIntegral (length a)
+thetaCost a = 0.1 * fromIntegral (length a)
 
 parsedCost :: ParsedMatch -> Double
 parsedCost (PerfectMatch i _)
@@ -256,22 +268,22 @@ parsedCost (PerfectMatch i _)
 parsedCost _ = 0
 
 unusedArgCost :: Int -> Double
-unusedArgCost s = 10 * fromIntegral s
+unusedArgCost s = fromIntegral $ s * 50
 
 unify :: CType -> CType -> M ()
 unify goal inst0 = do
   when (isPolyTy goal || isPolyTy inst0) (tellC polyTypeCost)
   subst <- use #unifier
   let inst = substCTy subst inst0
-  -- traceMX "unify" (goal, inst)
   skol <- gets skolems
+  -- traceMX "unify" (goal, inst0, inst, skol)
   case tryUnifyUnivarsButNotSkolems skol goal inst of
     Just subst -> do
-      -- traceMX "unify succ" (goal, inst0, inst, skol)
+      -- traceMX "unify succ" (goal, inst, subst)
       #unifier %= unionTCvSubst subst
-    Nothing -> empty
-      -- traceMX "unify failed" (goal, inst0, inst)
-
+    Nothing -> do
+      -- traceMX "unify failed" (goal, inst)
+      empty
 
 -- tc_unify_tys_fg :: Bool
 --                 -> (TyVar -> BindFlag)

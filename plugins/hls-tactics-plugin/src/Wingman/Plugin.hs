@@ -41,6 +41,7 @@ import           Wingman.Range
 import           Wingman.StaticPlugin
 import           Wingman.Tactics
 import           Wingman.Types
+import qualified Data.List as L
 import qualified Language.LSP.Server as LSP
 import qualified Data.Set as Set
 import qualified Data.Map as Map
@@ -57,7 +58,7 @@ import qualified Ide.Plugin.Config as Plugin
 import Control.Applicative (Alternative(empty))
 import Language.LSP.Types (TextDocumentEdit(_textDocument), DocumentSymbolOptions (_label))
 import qualified Data.Map as M
-
+import Control.Monad.State
 
 descriptor :: PluginId -> PluginDescriptor IdeState
 descriptor plId = (defaultPluginDescriptor plId)
@@ -79,7 +80,7 @@ descriptor plId = (defaultPluginDescriptor plId)
       [ mkPluginHandler STextDocumentCodeAction codeActionProvider
       , mkPluginHandler STextDocumentCodeLens codeLensProvider
       , mkPluginHandler STextDocumentHover hoverProvider
-      , mkPluginHandler STextDocumentCompletion getCompletionsWingman
+      -- , mkPluginHandler STextDocumentCompletion getCompletionsWingman
       ]
   , pluginRules = wingmanRules plId
   , pluginConfigDescriptor =
@@ -117,25 +118,23 @@ showUserFacingMessage ufm = do
   showLspMessage $ mkShowMessageParams ufm
   pure $ Left $ mkErr InternalError $ T.pack $ show ufm
 
-
 mkUserFacingMessage :: [TacticError] -> UserFacingMessage
 mkUserFacingMessage errs
-  | elem OutOfGas errs = NotEnoughGas
+  |  elem OutOfGas errs = NotEnoughGas
 mkUserFacingMessage _ = TacticErrors
-
 
 tacticCmd
     :: (T.Text -> TacticsM ())
     -> PluginId
     -> CommandFunction IdeState TacticParams
 tacticCmd tac pId state (TacticParams uri range var_name)
-  | Just nfp <- uriToNormalizedFilePath $ toNormalizedUri uri = do
+  | Just nfp <-  uriToNormalizedFilePath $ toNormalizedUri uri = do
       let stale a = runStaleIde "tacticCmd" state nfp a
 
       ccs <- getClientCapabilities
       cfg <- getTacticConfig pId
       res <- liftIO $ runMaybeT $ do
-        HoleJudgment{..} <- judgementForHole state nfp range cfg
+        HoleJudgment{..} <-judgementForHole state nfp range cfg
         let span = fmap (rangeToRealSrcSpan (fromNormalizedFilePath nfp)) hj_range
         TrackedStale pm pmmap <- stale GetAnnotatedParsedSource
         pm_span <- liftMaybe $ mapAgeFrom pmmap span
@@ -240,7 +239,7 @@ graftHole span rtr
 
 
 matchContextFixity :: HsMatchContext p -> Maybe LexicalFixity
-matchContextFixity (FunRhs _ l _) = Just l
+matchContextFixity (FunRhs _ l _) =  Just l
 matchContextFixity _ = Nothing
 
 

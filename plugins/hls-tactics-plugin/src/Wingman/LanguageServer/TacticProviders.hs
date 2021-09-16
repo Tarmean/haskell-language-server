@@ -57,6 +57,7 @@ commandTactic UseDataCon             = userSplit . mkVarOcc . T.unpack
 commandTactic Refine                 = const refine
 commandTactic BeginMetaprogram       = const metaprogram
 commandTactic RunMetaprogram         = parseMetaprogram
+commandTactic Guess         = guess 10 . T.unpack
 
 
 ------------------------------------------------------------------------------
@@ -74,6 +75,7 @@ tacticKind UseDataCon             = "useConstructor"
 tacticKind Refine                 = "refine"
 tacticKind BeginMetaprogram       = "beginMetaprogram"
 tacticKind RunMetaprogram         = "runMetaprogram"
+tacticKind Guess         = "guess"
 
 
 ------------------------------------------------------------------------------
@@ -92,6 +94,7 @@ tacticPreferred UseDataCon             = True
 tacticPreferred Refine                 = True
 tacticPreferred BeginMetaprogram       = False
 tacticPreferred RunMetaprogram         = True
+tacticPreferred Guess         = True
 
 
 mkTacticKind :: TacticCommand -> CodeActionKind
@@ -106,6 +109,9 @@ commandProvider :: TacticCommand -> TacticProvider
 commandProvider Auto  =
   requireHoleSort (== Hole) $
   provide Auto ""
+commandProvider Guess  =
+  requireHoleSort (== Hole) $
+  provide Guess ""
 commandProvider Intros =
   requireHoleSort (== Hole) $
   filterGoalType isFunction $

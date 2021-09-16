@@ -68,6 +68,7 @@ data TacticCommand
   | DestructAll
   | UseDataCon
   | Refine
+  | Guess
   | BeginMetaprogram
   | RunMetaprogram
   deriving (Eq, Ord, Show, Enum, Bounded)
@@ -88,6 +89,7 @@ tacticTitle = (mappend "Wingman: " .) . go
     go Refine _                 = "Refine hole"
     go BeginMetaprogram _       = "Use custom tactic block"
     go RunMetaprogram _         = "Run custom tactic"
+    go Guess _                  = "Guess a value in scope"
 
 
 ------------------------------------------------------------------------------
