@@ -120,9 +120,9 @@ mkContext  skolems hys goal = Ctx eg (M.size dirArgs) (CType res) skolems'
     occArgs =   M.fromListWith (<>) [(t, [Occ occ]) | HyInfo occ _ t  <- hys]
     dirArgs =  M.fromListWith (<>) [(CType t, [Arg (AP idx)]) |  (idx, t) <- zip [0..] directArg]
     -- FIXME: use theta
-    (tyVar, _theta, directArg, res) = tacticsSplitFunTy $ unCType goal
+    (_tyVar, _theta, directArg, res) = tacticsSplitFunTy $ unCType goal
 
-    skolems' = S.union (S.fromList tyVar) skolems
+    skolems' = skolems
 
 getUnusedArgs :: ParsedMatch -> Int
 getUnusedArgs (PerfectMatch _ _) = 0

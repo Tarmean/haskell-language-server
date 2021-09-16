@@ -261,8 +261,6 @@ bestContext :: String -> TacticsM [(Double, HyInfo CType, ArgMatch.ParsedMatch)]
 bestContext lab = do
   compItems <- asks ctx_complEnv
   -- traceMX "some tys" $ take 100 $ concatMap (getTy . snd) $ nonDetUFMToList tyEnv
-  def <- asks (fmap fst . ctxDefiningFuncs)
-  traceMX "curDef " def
   jdg <- goal
   traceM "hyps0"
   traceMX "hyps " (_jHypothesis jdg)
@@ -282,7 +280,7 @@ bestContext lab = do
       appCons
         | null directArgs = resCons <> tyConsInScope
         | otherwise = resCons <> dirTyCons
-      checkDirTyCons a = overlaps appCons a
+  traceMX "recursive defs" recHypTypes
   insts <- asks ctxInstEnvs
   let
      -- maybe normalize so Int doesn't bring in all the scopes?
@@ -314,7 +312,7 @@ bestContext lab = do
 -- overlaps :: S.Set Name -> Type -> Bool
 -- overlaps is t = intersec
 overlaps :: S.Set Name -> Type -> Bool
-overlaps is t = not $ S.null $ S.intersection is (tyCons t)
+overlaps is t = not $ null $ S.intersection is (tyCons t)
 tyCons :: Type -> S.Set Name
 tyCons (TyVarTy _) = mempty
 tyCons (AppTy l r) = S.union (tyCons l) (tyCons r)
@@ -415,15 +413,19 @@ maybeRecBindBag hs = do
       binds :: [LHsBindLR GhcTc GhcTc]
       binds = bagToList hs
       (lrels, lsiblings) = partition (isLocRelevant hl) binds
+   traceMX "maybeRec lrels" lrels
    forM_ lrels $ \lrel ->
        case guessName (unLoc lrel) of
          Just n -> do
+           traceMX "maybeRecBindBag" n
            #holeParents <>= S.singleton n
            #depOnHoleParents <>= S.singleton n
          Nothing -> pure ()
    recBindings (map unLoc lsiblings)
    forM_ lrels $ \lrel -> deepBinds (unLoc lrel)
 
+-- xy :: Int
+-- xy = x
 recBindings :: [HsBindLR GhcTc GhcTc] -> M ()
 recBindings ls = do
   initRec <- gets holeParents
