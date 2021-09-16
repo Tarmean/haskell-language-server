@@ -773,6 +773,8 @@ it to look for the right executable.
 :heart: The Haskell tooling dream is near, we need your help! :heart:
 
 - Join [our IRC channel](https://web.libera.chat/?channels=#haskell-language-server) at `#haskell-language-server` on [`libera`](https://libera.chat/).
+- Follow the [Haskell IDE team twitter account](https://twitter.com/IdeHaskell) for updates and help.
+- Join the [#haskell-tooling channel](https://discord.com/channels/280033776820813825/505370075402862594/808027763868827659) in the Functional Programming discord server. You can join the server via [this invitation](https://discord.gg/9spEdTNGrD).
 
 ### Style guidelines
 
@@ -873,3 +875,7 @@ This will typically provide instructions for how to support new languages.
 
 In some cases you may need to write a small bit of additional client support, or expose a way for the user to set the server's [configuration options](#configuring-haskell-language-server) and
 for them to configure how the server is started.
+
+### Sponsorship
+
+If you want to contribute financially you can do so via [open-collective](https://opencollective.com/haskell-language-server). In the past the funding has been used to sponsor [summer student projects](https://mpickering.github.io/ide/posts/2021-07-22-summer-of-hls.html). 

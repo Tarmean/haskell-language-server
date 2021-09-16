@@ -55,7 +55,10 @@ import           Ide.Types (PluginId)
 import Language.Haskell.GHC.ExactPrint
     ( Transform, modifyAnnsT, addAnnotationsForPretty )
 import           Language.LSP.Server (MonadLsp, sendNotification)
-import           Language.LSP.Types
+import           Language.LSP.Types              hiding
+                                                 (SemanticTokenAbsolute (length, line),
+                                                  SemanticTokenRelative (length),
+                                                  SemanticTokensEdit (_start))
 import           Language.LSP.Types.Capabilities
 import           OccName
 import           Prelude hiding (span)
@@ -537,6 +540,7 @@ isRhsHole (unTrack -> rss) (unTrack -> tcs) =
 
 
 ufmSeverity :: UserFacingMessage -> MessageType
+ufmSeverity NotEnoughGas            = MtInfo
 ufmSeverity TacticErrors            = MtError
 ufmSeverity TimedOut                = MtInfo
 ufmSeverity NothingToDo             = MtInfo
