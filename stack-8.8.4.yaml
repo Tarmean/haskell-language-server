@@ -61,7 +61,7 @@ extra-deps:
   - opentelemetry-0.6.1
   - opentelemetry-extra-0.6.1
   - refinery-0.4.0.0
-  - retrie-0.1.1.1
+  - retrie-1.1.0.0@sha256:5c722b4546f9a46311eedba22ab2c2d76f9c9d74514574759a9db1d4864fd834,4300
   - semigroups-0.18.5
   - shake-0.19.4
   - stylish-haskell-0.12.2.0

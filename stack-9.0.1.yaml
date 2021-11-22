@@ -47,7 +47,7 @@ extra-deps:
 - implicit-hie-cradle-0.3.0.5
 - monad-dijkstra-0.1.1.2
 - refinery-0.4.0.0
-- retrie-1.0.0.0
+- retrie-1.1.0.0@sha256:5c722b4546f9a46311eedba22ab2c2d76f9c9d74514574759a9db1d4864fd834,4300
 - some-1.0.2
 - lsp-1.2.0.1
 - lsp-types-1.3.0.1
