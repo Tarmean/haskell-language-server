@@ -93,7 +93,7 @@ library
     , parser-combinators
     , prettyprinter
     , refinery              ^>=0.4
-    , retrie                >=0.1.1.0
+    , retrie                >=1.1.0.0
     , syb
     , unagi-chan
     , text

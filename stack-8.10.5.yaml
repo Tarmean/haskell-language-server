@@ -51,7 +51,7 @@ extra-deps:
   # For stylish-haskell-0.12.2.0
   - optparse-applicative-0.15.1.0
   - refinery-0.4.0.0
-  - retrie-0.1.1.1
+  - retrie-1.1.0.0@sha256:5c722b4546f9a46311eedba22ab2c2d76f9c9d74514574759a9db1d4864fd834,4300
   - stylish-haskell-0.12.2.0
   - semigroups-0.18.5
   - temporary-1.2.1.1
