@@ -308,7 +308,14 @@ instance IsIdeGlobal GlobalIdeOptions
 getIdeOptions :: Action IdeOptions
 getIdeOptions = do
     GlobalIdeOptions x <- getIdeGlobalAction
-    return x
+    env <- lspEnv <$> getShakeExtras
+    case env of
+        Nothing -> return x
+        Just env -> do
+            config <- liftIO $ LSP.runLspT env HLS.getClientConfig
+            return x{optCheckProject = pure $ checkProject config,
+                     optCheckParents = pure $ checkParents config
+                }
 
 getIdeOptionsIO :: ShakeExtras -> IO IdeOptions
 getIdeOptionsIO ide = do
@@ -618,11 +625,13 @@ shakeRestart IdeState{..} reason acts =
               (stopTime,()) <- duration (cancelShakeSession runner)
               res <- shakeDatabaseProfile shakeDb
               backlog <- readIORef $ dirtyKeys shakeExtras
+              queue <- atomically $ peekInProgress $ actionQueue shakeExtras
               let profile = case res of
                       Just fp -> ", profile saved at " <> fp
                       _       -> ""
-              let msg = T.pack $ "Restarting build session " ++ reason' ++ keysMsg ++ abortMsg
+              let msg = T.pack $ "Restarting build session " ++ reason' ++ queueMsg ++ keysMsg ++ abortMsg
                   reason' = "due to " ++ reason
+                  queueMsg = " with queue " ++ show (map actionName queue)
                   keysMsg = " for keys " ++ show (HSet.toList backlog) ++ " "
                   abortMsg = "(aborting the previous one took " ++ showDuration stopTime ++ profile ++ ")"
               logDebug (logger shakeExtras) msg
@@ -700,7 +709,8 @@ newSession extras@ShakeExtras{..} shakeDb acts reason = do
         -- The inferred type signature doesn't work in ghc >= 9.0.1
         workRun :: (forall b. IO b -> IO b) -> IO (IO ())
         workRun restore = withSpan "Shake session" $ \otSpan -> do
-          setTag otSpan "_reason" (fromString reason)
+          setTag otSpan "reason" (fromString reason)
+          setTag otSpan "queue" (fromString $ unlines $ map actionName reenqueued)
           whenJust allPendingKeys $ \kk -> setTag otSpan "keys" (BS8.pack $ unlines $ map show $ toList kk)
           let keysActs = pumpActionThread otSpan : map (run otSpan) (reenqueued ++ acts)
           res <- try @SomeException $
@@ -893,7 +903,7 @@ useWithStaleFast' key file = do
 
   -- Async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  wait <- delayedAction $ mkDelayedAction ("C:" ++ show key) Debug $ use key file
+  wait <- delayedAction $ mkDelayedAction ("C:" ++ show key ++ ":" ++ fromNormalizedFilePath file) Debug $ use key file
 
   s@ShakeExtras{state} <- askShake
   r <- liftIO $ getValues state key file

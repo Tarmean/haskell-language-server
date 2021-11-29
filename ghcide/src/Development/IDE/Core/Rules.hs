@@ -138,7 +138,7 @@ import           Ide.Plugin.Config
 import qualified Language.LSP.Server                          as LSP
 import           Language.LSP.Types                           (SMethod (SCustomMethod))
 import           Language.LSP.VFS
-import           System.Directory                             (canonicalizePath, makeAbsolute)
+import           System.Directory                             (makeAbsolute)
 import           Data.Default                                 (def, Default)
 import           Ide.Plugin.Properties                        (HasProperty,
                                                                KeyNameProxy,
@@ -348,7 +348,22 @@ getLocatedImportsRule =
                 Left diags              -> pure (diags, Just (modName, Nothing))
                 Right (FileImport path) -> pure ([], Just (modName, Just path))
                 Right PackageImport     -> pure ([], Nothing)
-        let moduleImports = catMaybes imports'
+
+        {- IS THIS REALLY NEEDED? DOESNT SEEM SO
+
+        -- does this module have an hs-boot file? If so add a direct dependency
+        let bootPath = toNormalizedFilePath' $ fromNormalizedFilePath file <.> "hs-boot"
+        boot <- use GetFileExists bootPath
+        bootArtifact <- if boot == Just True
+              then do
+                let modName = ms_mod_name ms
+                loc <- liftIO $ mkHomeModLocation dflags modName (fromNormalizedFilePath bootPath)
+                return $ Just (noLoc modName, Just (ArtifactsLocation bootPath (Just loc) True))
+              else pure Nothing
+        -}
+        let bootArtifact = Nothing
+
+        let moduleImports = catMaybes $ bootArtifact : imports'
         pure (concat diags, Just moduleImports)
 
 type RawDepM a = StateT (RawDependencyInformation, IntMap ArtifactsLocation) Action a
@@ -374,7 +389,7 @@ rawDependencyInformation fs = do
 
     go :: NormalizedFilePath -- ^ Current module being processed
        -> Maybe ModSummary   -- ^ ModSummary of the module
-       -> StateT (RawDependencyInformation, IntMap ArtifactsLocation) Action FilePathId
+       -> RawDepM FilePathId
     go f msum = do
       -- First check to see if we have already processed the FilePath
       -- If we have, just return its Id but don't update any of the state.
@@ -754,7 +769,7 @@ getModIfaceFromDiskAndIndexRule =
       hie_loc = Compat.ml_hie_file $ ms_location ms
   hash <- liftIO $ Util.getFileHash hie_loc
   mrow <- liftIO $ HieDb.lookupHieFileFromSource hiedb (fromNormalizedFilePath f)
-  hie_loc' <- liftIO $ traverse (canonicalizePath . HieDb.hieModuleHieFile) mrow
+  hie_loc' <- liftIO $ traverse (makeAbsolute . HieDb.hieModuleHieFile) mrow
   case mrow of
     Just row
       | hash == HieDb.modInfoHash (HieDb.hieModInfo row)
