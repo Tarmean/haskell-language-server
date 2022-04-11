@@ -206,7 +206,7 @@ jobs:
       matrix:
         os: [Linux, macOS, Windows]
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v3
 
       - name: Generate tarball with all binaries
         run: |
@@ -245,7 +245,7 @@ jobs:
     needs: [tar, src-tar]
     runs-on: ubuntu-18.04
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v3
 
       - name: Generate sha256 sums for all workflow artifacts
         run: |
