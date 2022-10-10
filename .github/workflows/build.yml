@@ -25,7 +25,7 @@ jobs:
             ghc: '8.8.3' # fails due to segfault
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3.1.0
       with:
         submodules: true
     - uses: haskell/actions/setup@v1
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-18.04
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3.1.0
         with:
           submodules: true
 

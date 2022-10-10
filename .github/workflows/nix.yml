@@ -43,7 +43,7 @@ jobs:
         os: [ubuntu-latest, macOS-latest]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3.1.0
       with:
         submodules: true
     - uses: cachix/install-nix-action@v16
@@ -78,7 +78,7 @@ jobs:
         os: [ubuntu-latest, macOS-latest]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3.1.0
       with:
         submodules: true
     - uses: cachix/install-nix-action@v16
