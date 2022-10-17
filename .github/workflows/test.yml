@@ -115,7 +115,7 @@ jobs:
           echo "  ghc-options: -O0" >> cabal.project
 
       - name: Cache Cabal
-        uses: actions/cache@v2
+        uses: actions/cache@v3.0.11
         env:
           cache-name: cache-cabal
         with:
@@ -148,7 +148,7 @@ jobs:
           echo "TEST_OPTS=-j1 --rerun-update --rerun-filter failures,exceptions,new" >> $GITHUB_ENV
 
       - name: Cache test log bewteen attempts of the same run
-        uses: actions/cache@v2
+        uses: actions/cache@v3.0.11
         env:
           cache-name: cache-test-log
         with:
